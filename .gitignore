@@ -9,6 +9,9 @@ yarn-error.log*
 package-lock.json
 yarn.lock
 
+
+# Allow admin-dashboard .env
+!admin-dashboard/.env
 # =====================
 # Environment variables
 # =====================

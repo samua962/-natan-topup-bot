@@ -15,13 +15,9 @@ if (fs.existsSync(reactBuildPath)) {
     console.log("✅ React build found at:", reactBuildPath);
     adminApp.use(express.static(reactBuildPath));
     
-    // Serve index.html for all non-API routes
-    adminApp.get("*", (req, res, next) => {
-        if (!req.path.startsWith("/api") && !req.path.startsWith("/webhook")) {
-            res.sendFile(path.join(reactBuildPath, "index.html"));
-        } else {
-            next();
-        }
+    // Serve index.html for all non-API routes - FIXED: Use regex or function instead of "*"
+    adminApp.get(/^\/(?!api|webhook).*/, (req, res) => {
+        res.sendFile(path.join(reactBuildPath, "index.html"));
     });
 } else {
     console.log("⚠️ React build not found at:", reactBuildPath);
