@@ -40,4 +40,10 @@ app.use("/api/products", authMiddleware, productRoutes);
 app.use("/api/orders", authMiddleware, orderRoutes);
 app.use("/api/settings", authMiddleware, settingsRoutes);
 
+// Webhook endpoint for Telegram
+app.post("/webhook", (req, res) => {
+    const bot = require("../bot/bot");
+    bot.handleUpdate(req.body, res);
+});
+
 module.exports = app;

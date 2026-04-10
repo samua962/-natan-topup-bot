@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "build": "cd admin-dashboard && npm install && npm run build",
+    "dev": "nodemon index.js"
   },
   "keywords": [],
   "author": "",
@@ -22,3 +24,5 @@
     "uuid": "^13.0.0"
   }
 }
+
+
