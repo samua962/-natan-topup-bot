@@ -2,11 +2,13 @@
   "name": "natan-topup-bot",
   "version": "1.0.0",
   "main": "index.js",
-  "scripts": {
+ "scripts": {
     "start": "node index.js",
-    "build": "cd admin-dashboard && npm install && npm run build",
-    "dev": "nodemon index.js"
+    "build": "cd admin-dashboard && npm run build",
+    "postinstall": "cd admin-dashboard && npm install"
   },
+
+  
   "keywords": [],
   "author": "",
   "license": "ISC",

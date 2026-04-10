@@ -1,7 +1,6 @@
 {
   "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "npm install && cd admin-dashboard && npm install && npm run build"
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "startCommand": "node index.js",
