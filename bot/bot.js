@@ -1112,8 +1112,9 @@ bot.on("text", async (ctx) => {
     }
 });
 
+
 // =====================
-// 🟢 PHOTO MESSAGE
+// 🟢 PHOTO MESSAGE (PAYMENT SCREENSHOT)
 // =====================
 bot.on("photo", async (ctx) => {
     const userId = ctx.from.id;
@@ -1158,35 +1159,41 @@ bot.on("photo", async (ctx) => {
 
         const orderId = result.rows[0].id;
         
-        let adminDetails = `📥 *New Payment Received*\n\n`;
-        adminDetails += `👤 User: ${username}\n`;
-        adminDetails += `📦 Product: ${state.product.name}\n`;
-        adminDetails += `💰 Amount: ${state.product.price} ETB\n`;
-        adminDetails += `📦 Type: ${state.product.product_type || state.product.type}\n`;
-        adminDetails += `🧾 Order ID: #${orderId}\n\n`;
-        
+        // Build user information string
+        let userInfoText = "";
         if (state.collectedData) {
-            adminDetails += `📋 *User Information:*\n`;
-            if (state.collectedData.email) adminDetails += `📧 Email: ${state.collectedData.email}\n`;
-            if (state.collectedData.phone) adminDetails += `📱 Phone: ${state.collectedData.phone}\n`;
-            if (state.collectedData.password) adminDetails += `🔐 Password: ${state.collectedData.password}\n`;
-            if (state.collectedData.username) adminDetails += `👤 Username: ${state.collectedData.username}\n`;
-            if (state.collectedData.player_id) adminDetails += `🆔 Player ID: ${state.collectedData.player_id}\n`;
+            if (state.collectedData.email) userInfoText += `Email: ${state.collectedData.email}\n`;
+            if (state.collectedData.phone) userInfoText += `Phone: ${state.collectedData.phone}\n`;
+            if (state.collectedData.password) userInfoText += `Password: ${state.collectedData.password}\n`;
+            if (state.collectedData.username) userInfoText += `Username: ${state.collectedData.username}\n`;
+            if (state.collectedData.player_id) userInfoText += `Player ID: ${state.collectedData.player_id}\n`;
         }
         
-        if (state.playerId) {
-            adminDetails += `🆔 Player ID: ${state.playerId}\n`;
-            adminDetails += `👤 Player Name: ${state.playerName || "N/A"}\n`;
+        if (state.playerId && !state.collectedData?.player_id) {
+            userInfoText += `Player ID: ${state.playerId}\n`;
+            userInfoText += `Player Name: ${state.playerName || "N/A"}\n`;
+        }
+
+        // Build caption WITHOUT Markdown to avoid parsing errors
+        let caption = `📥 NEW PAYMENT RECEIVED\n\n`;
+        caption += `👤 User: ${username}\n`;
+        caption += `📦 Product: ${state.product.name}\n`;
+        caption += `💰 Amount: ${state.product.price} ETB\n`;
+        caption += `📦 Type: ${state.product.product_type || state.product.type}\n`;
+        caption += `🧾 Order ID: #${orderId}\n`;
+        
+        if (userInfoText) {
+            caption += `\n📋 USER INFORMATION:\n${userInfoText}`;
         }
         
-        adminDetails += `\n💳 Payment Method: ${state.paymentMethod?.name || "N/A"}`;
+        caption += `\n💳 Payment Method: ${state.paymentMethod?.name || "N/A"}\n\n`;
+        caption += `Use buttons below to manage:`;
 
         await ctx.telegram.sendPhoto(
             process.env.ADMIN_ID,
             fileId,
             {
-                caption: adminDetails,
-                parse_mode: "Markdown",
+                caption: caption,
                 reply_markup: {
                     inline_keyboard: [
                         [
@@ -1201,12 +1208,12 @@ bot.on("photo", async (ctx) => {
             }
         );
 
-        await ctx.reply("✅ *Payment received!* Our team will process your order shortly.\n\nYou will receive a notification once completed.", { parse_mode: "Markdown" });
+        await ctx.reply("✅ Payment received! Our team will process your order shortly.\n\nYou will receive a notification once completed.");
         delete userState[userId];
 
     } catch (error) {
         console.error("Payment screenshot error:", error);
-        await ctx.reply("❌ *Error processing payment.* Please try again or contact support.", { parse_mode: "Markdown" });
+        await ctx.reply("❌ Error processing payment. Please try again or contact support.");
     }
 });
 
