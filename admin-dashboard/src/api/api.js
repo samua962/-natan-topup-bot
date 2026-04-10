@@ -1,7 +1,17 @@
 import axios from "axios";
 
+// Use environment variable or fallback to current domain
+const getBaseUrl = () => {
+  // In production (Railway), use the current domain
+  if (window.location.hostname !== 'localhost') {
+    return `${window.location.protocol}//${window.location.hostname}/api`;
+  }
+  // In development (local), use localhost
+  return 'http://localhost:5000/api';
+};
+
 const API = axios.create({
-  baseURL: "http://localhost:5000/api"
+  baseURL: getBaseUrl()
 });
 
 // Add token to requests if exists
@@ -18,7 +28,6 @@ API.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Only redirect to login if not already on login page
       if (!window.location.pathname.includes('/login')) {
         localStorage.removeItem("adminToken");
         localStorage.removeItem("adminUser");
