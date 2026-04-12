@@ -7,13 +7,10 @@ const headers = {
     "Content-Type": "application/json"
 };
 
-// Generic product ID for validation only (try 1, 100, or ask Ragner support)
-const GENERIC_PRODUCT_ID = 1; // You may need to change this
+const GENERIC_PRODUCT_ID = 1;
 
-// ✅ Validate Player WITHOUT Product ID (using generic ID)
 async function validatePlayerOnly(playerId) {
     try {
-        // Try with generic product ID
         const res = await axios.post(
             `${BASE_URL}/validate-player`,
             {
@@ -29,7 +26,6 @@ async function validatePlayerOnly(playerId) {
     }
 }
 
-// ✅ Validate Player WITH Product ID (for instant products)
 async function validatePlayer(productId, playerId) {
     try {
         const res = await axios.post(
@@ -47,13 +43,14 @@ async function validatePlayer(productId, playerId) {
     }
 }
 
-// ✅ Create Order
 async function createOrder(productId, playerId) {
     try {
+        console.log(`Creating order - Product ID: ${productId}, Player ID: ${playerId}`);
+        
         const res = await axios.post(
             `${BASE_URL}/order`,
             {
-                product_id: productId,
+                product_id: parseInt(productId),
                 qty: 1,
                 player_id: playerId
             },
@@ -65,10 +62,29 @@ async function createOrder(productId, playerId) {
                 timeout: 15000
             }
         );
-        return res.data;
+        
+        console.log("Ragner API Response:", JSON.stringify(res.data, null, 2));
+        
+        // Check different possible success indicators
+        const isSuccess = 
+            res.data?.success === true || 
+            res.data?.status === "success" || 
+            res.data?.status === "completed" ||
+            res.data?.data?.status === "success" ||
+            (res.data?.order_id && !res.data?.error);
+        
+        return {
+            success: isSuccess,
+            data: res.data,
+            orderId: res.data?.order_id || res.data?.id || res.data?.data?.order_id
+        };
     } catch (err) {
         console.error("Create order error:", err.response?.data || err.message);
-        return null;
+        return {
+            success: false,
+            error: err.response?.data?.message || err.message,
+            details: err.response?.data
+        };
     }
 }
 

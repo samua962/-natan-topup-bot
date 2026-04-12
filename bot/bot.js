@@ -969,44 +969,54 @@ bot.on("callback_query", async (ctx) => {
     }
 
     // ADMIN: APPROVE
-    if (data.startsWith("approve_")) {
-        const orderId = data.split("_")[1];
+   // ADMIN: APPROVE - FIXED
+if (data.startsWith("approve_")) {
+    const orderId = data.split("_")[1];
 
-        try {
-            const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) return ctx.editMessageCaption("❌ Order not found");
+    try {
+        const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
+        if (!order) return ctx.editMessageCaption("❌ Order not found");
 
-            await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
+        await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
 
-            if (order.delivery_type === "ragner") {
-                const result = await createOrder(order.external_product_id, order.player_id);
+        if (order.delivery_type === "ragner") {
+            console.log(`Processing instant delivery for order ${orderId}`);
+            console.log(`External Product ID: ${order.external_product_id}`);
+            console.log(`Player ID: ${order.player_id}`);
+            
+            const result = await createOrder(order.external_product_id, order.player_id);
+            
+            console.log("Create order result:", JSON.stringify(result, null, 2));
+            
+            if (result && result.success) {
+                await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
+                await ctx.telegram.sendMessage(order.telegram_id, "✅ *UC Delivered Successfully!*", { parse_mode: "Markdown" });
+                return ctx.editMessageCaption("✅ Approved & Delivered Automatically");
+            } else {
+                const errorMsg = result?.error || result?.details?.message || "Unknown error";
+                console.error(`Auto-delivery failed for order ${orderId}: ${errorMsg}`);
                 
-                if (result && result.success) {
-                    await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                    await ctx.telegram.sendMessage(order.telegram_id, "🎮 *UC Delivered Successfully!*", { parse_mode: "Markdown" });
-                    return ctx.editMessageCaption("✅ Approved & Delivered Automatically");
-                } else {
-                    await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
-                    return ctx.editMessageCaption("⚠️ Approved but auto-delivery failed\n\nClick Complete when manually delivered", {
-                        reply_markup: {
-                            inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
-                        }
-                    });
-                }
+                await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
+                return ctx.editMessageCaption(`⚠️ Auto-delivery failed: ${errorMsg}\n\nClick Complete when manually delivered`, {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
+                    }
+                });
             }
-
-            await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
-            await ctx.editMessageCaption(`✅ Order #${orderId} Approved\n\nClick Complete when delivered`, {
-                reply_markup: {
-                    inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
-                }
-            });
-
-        } catch (error) {
-            console.error("Approve error:", error);
-            await ctx.editMessageCaption("⚠️ Error processing approval");
         }
+
+        await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
+        await ctx.editMessageCaption(`✅ Order #${orderId} Approved\n\nClick Complete when delivered`, {
+            reply_markup: {
+                inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
+            }
+        });
+
+    } catch (error) {
+        console.error("Approve error:", error);
+        await ctx.editMessageCaption("⚠️ Error processing approval");
     }
+}
 
     // ADMIN: COMPLETE
     if (data.startsWith("complete_")) {
