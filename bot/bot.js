@@ -971,6 +971,7 @@ bot.on("callback_query", async (ctx) => {
     // ADMIN: APPROVE
    // ADMIN: APPROVE - FIXED
 // ADMIN: APPROVE - FIXED with pre-validation
+// ADMIN: APPROVE - PRESERVES ALL ORDER DETAILS
 if (data.startsWith("approve_")) {
     const orderId = data.split("_")[1];
 
@@ -980,7 +981,35 @@ if (data.startsWith("approve_")) {
             return ctx.editMessageCaption("❌ Order not found");
         }
 
-        // Update status to APPROVED
+        // Build the base order details (always show these)
+        let orderDetails = `📦 ORDER #${order.id}\n`;
+        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
+        orderDetails += `👤 User: ${order.telegram_id}\n`;
+        orderDetails += `📦 Product: ${order.product_name}\n`;
+        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
+        orderDetails += `📅 Date: ${new Date(order.created_at).toLocaleString()}\n`;
+        
+        // Add player details if they exist
+        if (order.player_id) {
+            orderDetails += `\n🎮 Player ID: ${order.player_id}\n`;
+        }
+        if (order.player_name) {
+            orderDetails += `👤 Player Name: ${order.player_name}\n`;
+        }
+        
+        // Add user inputs if they exist (for TikTok, Telegram, etc.)
+        if (order.user_inputs) {
+            try {
+                const inputs = JSON.parse(order.user_inputs);
+                orderDetails += `\n📋 USER INFORMATION:\n`;
+                if (inputs.email) orderDetails += `📧 Email: ${inputs.email}\n`;
+                if (inputs.phone) orderDetails += `📱 Phone: ${inputs.phone}\n`;
+                if (inputs.username) orderDetails += `👤 Username: ${inputs.username}\n`;
+                if (inputs.password) orderDetails += `🔐 Password: ${inputs.password}\n`;
+                if (inputs.player_id) orderDetails += `🆔 Player ID: ${inputs.player_id}\n`;
+            } catch (e) {}
+        }
+
         await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
 
         // Handle Ragner instant delivery
@@ -989,22 +1018,22 @@ if (data.startsWith("approve_")) {
             console.log(`[Order ${orderId}] Product ID: ${order.external_product_id}`);
             console.log(`[Order ${orderId}] Player ID: ${order.player_id}`);
             
-            // STEP 1: Validate player first
-            console.log(`[Order ${orderId}] Validating player...`);
+            // Validate player first
             const validation = await validatePlayer(order.external_product_id, order.player_id);
             
             if (!validation || !validation.success) {
-                console.log(`[Order ${orderId}] Player validation failed:`, validation);
+                console.log(`[Order ${orderId}] Player validation failed`);
+                
                 await ctx.telegram.sendMessage(order.telegram_id, 
-                    "⚠️ *Payment approved but player validation failed.*\nPlease contact support.", 
+                    "⚠️ Payment approved but player validation failed. Contact support.", 
                     { parse_mode: "Markdown" });
                 
+                // Update admin message - KEEP ALL DETAILS
                 return ctx.editMessageCaption(
-                    `⚠️ Order #${orderId} - Validation Failed\n\n` +
-                    `Product: ${order.product_name}\n` +
-                    `Player ID: ${order.player_id}\n\n` +
-                    `❌ Player validation failed. Please check the Player ID.\n\n` +
-                    `Click "Complete" only after manual delivery`,
+                    `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+                    `⚠️ STATUS: APPROVED (Validation Failed)\n` +
+                    `❌ Auto-delivery unavailable. Please deliver manually.\n\n` +
+                    `👇 Click "Complete" after manual delivery`,
                     {
                         reply_markup: {
                             inline_keyboard: [
@@ -1016,33 +1045,33 @@ if (data.startsWith("approve_")) {
                 );
             }
             
-            console.log(`[Order ${orderId}] Player validated:`, validation.data?.nickname || "OK");
-            
-            // STEP 2: Create order
+            // Create order
             const result = await createOrder(order.external_product_id, order.player_id);
-            
-            console.log(`[Order ${orderId}] API Response:`, JSON.stringify(result, null, 2));
             
             if (result && result.success) {
                 await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
                 await ctx.telegram.sendMessage(order.telegram_id, "🎮 *UC Delivered Successfully!*", { parse_mode: "Markdown" });
-                return ctx.editMessageCaption(`✅ Order #${orderId} - Delivered Successfully!`);
+                
+                // Order completed - can simplify the message
+                return ctx.editMessageCaption(
+                    `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+                    `✅ STATUS: COMPLETED\n` +
+                    `🎮 UC Delivered Successfully!`
+                );
             } else {
                 const errorMsg = result?.error || result?.details?.message || "Unknown error";
                 console.error(`[Order ${orderId}] Auto-delivery failed: ${errorMsg}`);
                 
                 await ctx.telegram.sendMessage(order.telegram_id, 
-                    "✅ *Payment approved!* Delivery in progress. You will be notified when completed.", 
+                    "✅ Payment approved! Delivery in progress.", 
                     { parse_mode: "Markdown" });
                 
+                // Update admin message - KEEP ALL DETAILS
                 return ctx.editMessageCaption(
-                    `⚠️ Order #${orderId} - APPROVED\n\n` +
-                    `Product: ${order.product_name}\n` +
-                    `Amount: ${order.price_etb} ETB\n` +
-                    `Player ID: ${order.player_id}\n` +
-                    `Player Name: ${order.player_name || "N/A"}\n\n` +
+                    `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+                    `⚠️ STATUS: APPROVED\n` +
                     `❌ Auto-delivery failed: ${errorMsg}\n\n` +
-                    `📦 Click "Complete Delivery" after manually delivering`,
+                    `👇 Click "Complete" after manual delivery`,
                     {
                         reply_markup: {
                             inline_keyboard: [
@@ -1055,15 +1084,13 @@ if (data.startsWith("approve_")) {
             }
         }
 
-        // Manual delivery
-        await ctx.telegram.sendMessage(order.telegram_id, "✅ *Payment approved!* Delivery in progress.", { parse_mode: "Markdown" });
+        // Manual delivery - KEEP ALL DETAILS
+        await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "Markdown" });
         
         await ctx.editMessageCaption(
-            `✅ Order #${orderId} - APPROVED\n\n` +
-            `Product: ${order.product_name}\n` +
-            `Amount: ${order.price_etb} ETB\n` +
-            `Player ID: ${order.player_id || "N/A"}\n\n` +
-            `Click "Complete Delivery" after delivering manually`,
+            `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+            `✅ STATUS: APPROVED\n` +
+            `📦 Manual delivery - click "Complete" after delivering`,
             {
                 reply_markup: {
                     inline_keyboard: [
@@ -1080,40 +1107,73 @@ if (data.startsWith("approve_")) {
     }
 }
     // ADMIN: COMPLETE
-    if (data.startsWith("complete_")) {
-        const orderId = data.split("_")[1];
+   // ADMIN: COMPLETE - PRESERVES ORDER DETAILS
+if (data.startsWith("complete_")) {
+    const orderId = data.split("_")[1];
 
-        try {
-            const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) return ctx.editMessageCaption("❌ Order not found");
+    try {
+        const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
+        if (!order) return ctx.editMessageCaption("❌ Order not found");
 
-            await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "🎮 *Order Delivered Successfully!*", { parse_mode: "Markdown" });
-            await ctx.editMessageCaption(`✅ Order #${orderId} Completed!`);
-
-        } catch (error) {
-            console.error("Complete error:", error);
-            await ctx.editMessageCaption("⚠️ Error completing order");
+        // Build order details (same as above)
+        let orderDetails = `📦 ORDER #${order.id}\n`;
+        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
+        orderDetails += `👤 User: ${order.telegram_id}\n`;
+        orderDetails += `📦 Product: ${order.product_name}\n`;
+        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
+        orderDetails += `📅 Date: ${new Date(order.created_at).toLocaleString()}\n`;
+        
+        if (order.player_id) {
+            orderDetails += `\n🎮 Player ID: ${order.player_id}\n`;
         }
+        if (order.player_name) {
+            orderDetails += `👤 Player Name: ${order.player_name}\n`;
+        }
+
+        await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
+        await ctx.telegram.sendMessage(order.telegram_id, "🎮 *Order Delivered Successfully!*", { parse_mode: "Markdown" });
+        
+        // Update admin message - show completed status
+        await ctx.editMessageCaption(
+            `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+            `✅ STATUS: COMPLETED\n` +
+            `🎮 Order delivered successfully!`
+        );
+
+    } catch (error) {
+        console.error("Complete error:", error);
+        await ctx.editMessageCaption("⚠️ Error completing order");
     }
+}
 
     // ADMIN: REJECT
-    if (data.startsWith("reject_")) {
-        const orderId = data.split("_")[1];
+  // ADMIN: REJECT - PRESERVES ORDER DETAILS
+if (data.startsWith("reject_")) {
+    const orderId = data.split("_")[1];
 
-        try {
-            const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) return ctx.editMessageCaption("❌ Order not found");
+    try {
+        const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
+        if (!order) return ctx.editMessageCaption("❌ Order not found");
 
-            await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "❌ *Payment rejected.* Please contact support.", { parse_mode: "Markdown" });
-            await ctx.editMessageCaption("❌ Rejected");
+        let orderDetails = `📦 ORDER #${order.id}\n`;
+        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
+        orderDetails += `👤 User: ${order.telegram_id}\n`;
+        orderDetails += `📦 Product: ${order.product_name}\n`;
+        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
 
-        } catch (error) {
-            console.error("Reject error:", error);
-            await ctx.editMessageCaption("⚠️ Error rejecting order");
-        }
+        await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
+        await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support.", { parse_mode: "Markdown" });
+        
+        await ctx.editMessageCaption(
+            `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
+            `❌ STATUS: REJECTED`
+        );
+
+    } catch (error) {
+        console.error("Reject error:", error);
+        await ctx.editMessageCaption("⚠️ Error rejecting order");
     }
+}
 });
 
 // =====================
