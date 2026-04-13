@@ -1287,13 +1287,13 @@ bot.on("photo", async (ctx) => {
 
         const result = await db.query(
             `INSERT INTO orders 
-            (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, 
+          (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, 
      player_id, player_name, delivery_type, payment_file_id, status, user_inputs)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'PENDING', $11)
             RETURNING id`,
             [
                 userId,
-                ctx.from.username || null, 
+                    ctx.from.username || null,
                 state.product.type === "database" ? state.product.id : null,
                 state.product.type === "ragner" ? state.product.id : null,
                 state.product.name,
@@ -1307,10 +1307,58 @@ bot.on("photo", async (ctx) => {
         );
 
         const orderId = result.rows[0].id;
+        // Build user information string
+        let userInfoText = "";
+        if (state.collectedData) {
+            if (state.collectedData.email) userInfoText += `Email: ${state.collectedData.email}\n`;
+            if (state.collectedData.phone) userInfoText += `Phone: ${state.collectedData.phone}\n`;
+            if (state.collectedData.password) userInfoText += `Password: ${state.collectedData.password}\n`;
+            if (state.collectedData.username) userInfoText += `Username: ${state.collectedData.username}\n`;
+            if (state.collectedData.player_id) userInfoText += `Player ID: ${state.collectedData.player_id}\n`;
+        }
         
-        // Rest of the code remains the same...
-        // ... (build caption, send to admin, etc.)
+        if (state.playerId && !state.collectedData?.player_id) {
+            userInfoText += `Player ID: ${state.playerId}\n`;
+            userInfoText += `Player Name: ${state.playerName || "N/A"}\n`;
+        }
+
+        // Build caption WITHOUT Markdown to avoid parsing errors
+        let caption = `📥 NEW PAYMENT RECEIVED\n\n`;
+        caption += `👤 User: ${username}\n`;
+        caption += `📦 Product: ${state.product.name}\n`;
+        caption += `💰 Amount: ${state.product.price} ETB\n`;
+        caption += `📦 Type: ${state.product.product_type || state.product.type}\n`;
+        caption += `🧾 Order ID: #${orderId}\n`;
         
+        if (userInfoText) {
+            caption += `\n📋 USER INFORMATION:\n${userInfoText}`;
+        }
+        
+        caption += `\n💳 Payment Method: ${state.paymentMethod?.name || "N/A"}\n\n`;
+        caption += `Use buttons below to manage:`;
+
+        await ctx.telegram.sendPhoto(
+            process.env.ADMIN_ID,
+            fileId,
+            {
+                caption: caption,
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "✅ Approve", callback_data: `approve_${orderId}` },
+                            { text: "❌ Reject", callback_data: `reject_${orderId}` }
+                        ],
+                        [
+                            { text: "🎮 Complete", callback_data: `complete_${orderId}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.reply("✅ Payment received! Our team will process your order shortly.\n\nYou will receive a notification once completed.");
+        delete userState[userId];
+
     } catch (error) {
         console.error("Payment screenshot error:", error);
         await ctx.reply("❌ Error processing payment. Please try again or contact support.");
