@@ -970,54 +970,115 @@ bot.on("callback_query", async (ctx) => {
 
     // ADMIN: APPROVE
    // ADMIN: APPROVE - FIXED
+// ADMIN: APPROVE - FIXED with pre-validation
 if (data.startsWith("approve_")) {
     const orderId = data.split("_")[1];
 
     try {
         const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-        if (!order) return ctx.editMessageCaption("❌ Order not found");
+        if (!order) {
+            return ctx.editMessageCaption("❌ Order not found");
+        }
 
+        // Update status to APPROVED
         await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
 
+        // Handle Ragner instant delivery
         if (order.delivery_type === "ragner") {
-            console.log(`Processing instant delivery for order ${orderId}`);
-            console.log(`External Product ID: ${order.external_product_id}`);
-            console.log(`Player ID: ${order.player_id}`);
+            console.log(`[Order ${orderId}] Processing instant delivery`);
+            console.log(`[Order ${orderId}] Product ID: ${order.external_product_id}`);
+            console.log(`[Order ${orderId}] Player ID: ${order.player_id}`);
             
+            // STEP 1: Validate player first
+            console.log(`[Order ${orderId}] Validating player...`);
+            const validation = await validatePlayer(order.external_product_id, order.player_id);
+            
+            if (!validation || !validation.success) {
+                console.log(`[Order ${orderId}] Player validation failed:`, validation);
+                await ctx.telegram.sendMessage(order.telegram_id, 
+                    "⚠️ *Payment approved but player validation failed.*\nPlease contact support.", 
+                    { parse_mode: "Markdown" });
+                
+                return ctx.editMessageCaption(
+                    `⚠️ Order #${orderId} - Validation Failed\n\n` +
+                    `Product: ${order.product_name}\n` +
+                    `Player ID: ${order.player_id}\n\n` +
+                    `❌ Player validation failed. Please check the Player ID.\n\n` +
+                    `Click "Complete" only after manual delivery`,
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }],
+                                [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]
+                            ]
+                        }
+                    }
+                );
+            }
+            
+            console.log(`[Order ${orderId}] Player validated:`, validation.data?.nickname || "OK");
+            
+            // STEP 2: Create order
             const result = await createOrder(order.external_product_id, order.player_id);
             
-            console.log("Create order result:", JSON.stringify(result, null, 2));
+            console.log(`[Order ${orderId}] API Response:`, JSON.stringify(result, null, 2));
             
             if (result && result.success) {
                 await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                await ctx.telegram.sendMessage(order.telegram_id, "✅ *UC Delivered Successfully!*", { parse_mode: "Markdown" });
-                return ctx.editMessageCaption("✅ Approved & Delivered Automatically");
+                await ctx.telegram.sendMessage(order.telegram_id, "🎮 *UC Delivered Successfully!*", { parse_mode: "Markdown" });
+                return ctx.editMessageCaption(`✅ Order #${orderId} - Delivered Successfully!`);
             } else {
                 const errorMsg = result?.error || result?.details?.message || "Unknown error";
-                console.error(`Auto-delivery failed for order ${orderId}: ${errorMsg}`);
+                console.error(`[Order ${orderId}] Auto-delivery failed: ${errorMsg}`);
                 
-                await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
-                return ctx.editMessageCaption(`⚠️ Auto-delivery failed: ${errorMsg}\n\nClick Complete when manually delivered`, {
-                    reply_markup: {
-                        inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
+                await ctx.telegram.sendMessage(order.telegram_id, 
+                    "✅ *Payment approved!* Delivery in progress. You will be notified when completed.", 
+                    { parse_mode: "Markdown" });
+                
+                return ctx.editMessageCaption(
+                    `⚠️ Order #${orderId} - APPROVED\n\n` +
+                    `Product: ${order.product_name}\n` +
+                    `Amount: ${order.price_etb} ETB\n` +
+                    `Player ID: ${order.player_id}\n` +
+                    `Player Name: ${order.player_name || "N/A"}\n\n` +
+                    `❌ Auto-delivery failed: ${errorMsg}\n\n` +
+                    `📦 Click "Complete Delivery" after manually delivering`,
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }],
+                                [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]
+                            ]
+                        }
                     }
-                });
+                );
             }
         }
 
-        await ctx.telegram.sendMessage(order.telegram_id, "⏳ *Payment approved. Delivery in progress...*", { parse_mode: "Markdown" });
-        await ctx.editMessageCaption(`✅ Order #${orderId} Approved\n\nClick Complete when delivered`, {
-            reply_markup: {
-                inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]]
+        // Manual delivery
+        await ctx.telegram.sendMessage(order.telegram_id, "✅ *Payment approved!* Delivery in progress.", { parse_mode: "Markdown" });
+        
+        await ctx.editMessageCaption(
+            `✅ Order #${orderId} - APPROVED\n\n` +
+            `Product: ${order.product_name}\n` +
+            `Amount: ${order.price_etb} ETB\n` +
+            `Player ID: ${order.player_id || "N/A"}\n\n` +
+            `Click "Complete Delivery" after delivering manually`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }],
+                        [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]
+                    ]
+                }
             }
-        });
+        );
 
     } catch (error) {
         console.error("Approve error:", error);
-        await ctx.editMessageCaption("⚠️ Error processing approval");
+        await ctx.editMessageCaption(`❌ Error processing approval: ${error.message}`);
     }
 }
-
     // ADMIN: COMPLETE
     if (data.startsWith("complete_")) {
         const orderId = data.split("_")[1];

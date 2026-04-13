@@ -47,6 +47,19 @@ async function createOrder(productId, playerId) {
     try {
         console.log(`Creating order - Product ID: ${productId}, Player ID: ${playerId}`);
         
+        // First, validate the player
+        const validation = await validatePlayer(productId, playerId);
+        
+        if (!validation || !validation.success) {
+            console.log("Player validation failed before order");
+            return {
+                success: false,
+                error: "Player validation failed. Please check Player ID.",
+                details: validation
+            };
+        }
+        
+        // Then create the order
         const res = await axios.post(
             `${BASE_URL}/order`,
             {
@@ -65,7 +78,6 @@ async function createOrder(productId, playerId) {
         
         console.log("Ragner API Response:", JSON.stringify(res.data, null, 2));
         
-        // Check different possible success indicators
         const isSuccess = 
             res.data?.success === true || 
             res.data?.status === "success" || 
@@ -82,7 +94,7 @@ async function createOrder(productId, playerId) {
         console.error("Create order error:", err.response?.data || err.message);
         return {
             success: false,
-            error: err.response?.data?.message || err.message,
+            error: err.response?.data?.error?.message || err.message,
             details: err.response?.data
         };
     }
