@@ -114,12 +114,20 @@ async function safeEditMedia(ctx, imageUrl, caption, buttons) {
 }
 
 // =====================
-// 🟢 BUTTON BUILDER
+// 🟢 BUTTON BUILDER (supports single column mode)
 // =====================
-function buildButtons(items) {
+function buildButtons(items, singleColumn = false) {
     const rows = [];
-    for (let i = 0; i < items.length; i += 2) {
-        rows.push(items.slice(i, i + 2));
+    if (singleColumn) {
+        // Single column - one item per row
+        for (let i = 0; i < items.length; i++) {
+            rows.push([items[i]]);
+        }
+    } else {
+        // Two columns - default
+        for (let i = 0; i < items.length; i += 2) {
+            rows.push(items.slice(i, i + 2));
+        }
     }
     return rows;
 }
@@ -230,21 +238,27 @@ async function showDatabaseProducts(ctx, subId) {
             return;
         }
 
+        const productType = result.rows[0]?.product_type;
+        
+        // Use single column for grospack and subscription
+        const useSingleColumn = productType === "grospack" || productType === "subscription";
+        
         const buttons = buildButtons(
             result.rows.map(p => ({
                 text: `${p.name} - ${p.price_etb} ETB`,
                 callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`
-            }))
+            })),
+            useSingleColumn
         );
 
         buttons.push([{ text: "🔙 Back", callback_data: "back_main" }]);
         
         let title = "📦 *Select Product:*";
-        if (result.rows[0]?.product_type === "grospack") title = "🎁 *Grospack Options:*";
-        if (result.rows[0]?.product_type === "subscription") title = "👑 *Subscription Plans:*";
-        if (result.rows[0]?.product_type === "free_fire") title = "🔥 *Free Fire Diamonds:*";
-        if (result.rows[0]?.product_type === "tiktok") title = "📱 *TikTok Coins:*";
-        if (result.rows[0]?.product_type === "telegram") title = "✍️ *Telegram Premium:*";
+        if (productType === "grospack") title = "🎁 *Grospack Options:*";
+        if (productType === "subscription") title = "👑 *Subscription Plans:*";
+        if (productType === "free_fire") title = "🔥 *Free Fire Diamonds:*";
+        if (productType === "tiktok") title = "📱 *TikTok Coins:*";
+        if (productType === "telegram") title = "✍️ *Telegram Premium:*";
         
         await safeEdit(ctx, title, buttons);
     } catch (error) {
@@ -766,7 +780,10 @@ bot.start(async (ctx) => {
 bot.on("callback_query", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from.id;
-
+// Handle noop (do nothing)
+if (data === "noop") {
+    return ctx.answerCbQuery("Please wait...");
+}
     if (!userState[userId]) userState[userId] = {};
     const state = userState[userId];
 
@@ -968,57 +985,47 @@ bot.on("callback_query", async (ctx) => {
         return showMainMenu(ctx);
     }
 
-    // ADMIN: APPROVE
-   // ADMIN: APPROVE - FIXED
-// ADMIN: APPROVE - FIXED with pre-validation
-// ADMIN: APPROVE - PRESERVES ALL ORDER DETAILS
+   // Track processing orders to prevent double processing
+const processingOrders = new Set();
+
+// ADMIN: APPROVE - WITH DOUBLE-CLICK PROTECTION
 if (data.startsWith("approve_")) {
     const orderId = data.split("_")[1];
+    
+    // Check if this order is already being processed
+    if (processingOrders.has(orderId)) {
+        console.log(`Order ${orderId} is already being processed, ignoring duplicate click`);
+        return ctx.answerCbQuery("Processing... Please wait.");
+    }
+    
+    // Mark this order as processing
+    processingOrders.add(orderId);
+    
+    // Immediately update the button to show "Processing..." to prevent double click
+    await ctx.editMessageReplyMarkup({
+        inline_keyboard: [
+            [{ text: "⏳ Processing...", callback_data: "noop" }],
+            [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]
+        ]
+    });
 
     try {
         const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
         if (!order) {
+            processingOrders.delete(orderId);
             return ctx.editMessageCaption("❌ Order not found");
         }
 
-        // Build the base order details (always show these)
-        let orderDetails = `📦 ORDER #${order.id}\n`;
-        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
-        orderDetails += `👤 User: ${order.telegram_id}\n`;
-        orderDetails += `📦 Product: ${order.product_name}\n`;
-        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
-        orderDetails += `📅 Date: ${new Date(order.created_at).toLocaleString()}\n`;
-        
-        // Add player details if they exist
-        if (order.player_id) {
-            orderDetails += `\n🎮 Player ID: ${order.player_id}\n`;
-        }
-        if (order.player_name) {
-            orderDetails += `👤 Player Name: ${order.player_name}\n`;
-        }
-        
-        // Add user inputs if they exist (for TikTok, Telegram, etc.)
-        if (order.user_inputs) {
-            try {
-                const inputs = JSON.parse(order.user_inputs);
-                orderDetails += `\n📋 USER INFORMATION:\n`;
-                if (inputs.email) orderDetails += `📧 Email: ${inputs.email}\n`;
-                if (inputs.phone) orderDetails += `📱 Phone: ${inputs.phone}\n`;
-                if (inputs.username) orderDetails += `👤 Username: ${inputs.username}\n`;
-                if (inputs.password) orderDetails += `🔐 Password: ${inputs.password}\n`;
-                if (inputs.player_id) orderDetails += `🆔 Player ID: ${inputs.player_id}\n`;
-            } catch (e) {}
-        }
+        // Build order details using the helper function
+        let orderDetails = buildOrderDetails(order);
 
+        // Update status to APPROVED
         await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
 
         // Handle Ragner instant delivery
         if (order.delivery_type === "ragner") {
             console.log(`[Order ${orderId}] Processing instant delivery`);
-            console.log(`[Order ${orderId}] Product ID: ${order.external_product_id}`);
-            console.log(`[Order ${orderId}] Player ID: ${order.player_id}`);
             
-            // Validate player first
             const validation = await validatePlayer(order.external_product_id, order.player_id);
             
             if (!validation || !validation.success) {
@@ -1028,7 +1035,8 @@ if (data.startsWith("approve_")) {
                     "⚠️ Payment approved but player validation failed. Contact support.", 
                     { parse_mode: "Markdown" });
                 
-                // Update admin message - KEEP ALL DETAILS
+                processingOrders.delete(orderId);
+                
                 return ctx.editMessageCaption(
                     `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
                     `⚠️ STATUS: APPROVED (Validation Failed)\n` +
@@ -1045,14 +1053,14 @@ if (data.startsWith("approve_")) {
                 );
             }
             
-            // Create order
             const result = await createOrder(order.external_product_id, order.player_id);
             
             if (result && result.success) {
                 await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
                 await ctx.telegram.sendMessage(order.telegram_id, "🎮 *UC Delivered Successfully!*", { parse_mode: "Markdown" });
                 
-                // Order completed - can simplify the message
+                processingOrders.delete(orderId);
+                
                 return ctx.editMessageCaption(
                     `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
                     `✅ STATUS: COMPLETED\n` +
@@ -1066,7 +1074,8 @@ if (data.startsWith("approve_")) {
                     "✅ Payment approved! Delivery in progress.", 
                     { parse_mode: "Markdown" });
                 
-                // Update admin message - KEEP ALL DETAILS
+                processingOrders.delete(orderId);
+                
                 return ctx.editMessageCaption(
                     `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
                     `⚠️ STATUS: APPROVED\n` +
@@ -1084,8 +1093,10 @@ if (data.startsWith("approve_")) {
             }
         }
 
-        // Manual delivery - KEEP ALL DETAILS
+        // Manual delivery
         await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "Markdown" });
+        
+        processingOrders.delete(orderId);
         
         await ctx.editMessageCaption(
             `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -1103,37 +1114,38 @@ if (data.startsWith("approve_")) {
 
     } catch (error) {
         console.error("Approve error:", error);
+        processingOrders.delete(orderId);
         await ctx.editMessageCaption(`❌ Error processing approval: ${error.message}`);
     }
 }
-    // ADMIN: COMPLETE
-   // ADMIN: COMPLETE - PRESERVES ORDER DETAILS
+  // ADMIN: COMPLETE - WITH DOUBLE-CLICK PROTECTION
 if (data.startsWith("complete_")) {
     const orderId = data.split("_")[1];
+    
+    if (processingOrders.has(orderId)) {
+        return ctx.answerCbQuery("Processing... Please wait.");
+    }
+    
+    processingOrders.add(orderId);
+    
+    await ctx.editMessageReplyMarkup({
+        inline_keyboard: [[{ text: "⏳ Processing...", callback_data: "noop" }]]
+    });
 
     try {
         const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-        if (!order) return ctx.editMessageCaption("❌ Order not found");
+        if (!order) {
+            processingOrders.delete(orderId);
+            return ctx.editMessageCaption("❌ Order not found");
+        }
 
-        // Build order details (same as above)
-        let orderDetails = `📦 ORDER #${order.id}\n`;
-        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
-        orderDetails += `👤 User: ${order.telegram_id}\n`;
-        orderDetails += `📦 Product: ${order.product_name}\n`;
-        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
-        orderDetails += `📅 Date: ${new Date(order.created_at).toLocaleString()}\n`;
-        
-        if (order.player_id) {
-            orderDetails += `\n🎮 Player ID: ${order.player_id}\n`;
-        }
-        if (order.player_name) {
-            orderDetails += `👤 Player Name: ${order.player_name}\n`;
-        }
+        let orderDetails = buildOrderDetails(order);
 
         await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
         await ctx.telegram.sendMessage(order.telegram_id, "🎮 *Order Delivered Successfully!*", { parse_mode: "Markdown" });
         
-        // Update admin message - show completed status
+        processingOrders.delete(orderId);
+        
         await ctx.editMessageCaption(
             `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
             `✅ STATUS: COMPLETED\n` +
@@ -1142,27 +1154,37 @@ if (data.startsWith("complete_")) {
 
     } catch (error) {
         console.error("Complete error:", error);
+        processingOrders.delete(orderId);
         await ctx.editMessageCaption("⚠️ Error completing order");
     }
 }
-
-    // ADMIN: REJECT
-  // ADMIN: REJECT - PRESERVES ORDER DETAILS
+// ADMIN: REJECT - WITH DOUBLE-CLICK PROTECTION
 if (data.startsWith("reject_")) {
     const orderId = data.split("_")[1];
+    
+    if (processingOrders.has(orderId)) {
+        return ctx.answerCbQuery("Processing... Please wait.");
+    }
+    
+    processingOrders.add(orderId);
+    
+    await ctx.editMessageReplyMarkup({
+        inline_keyboard: [[{ text: "⏳ Processing...", callback_data: "noop" }]]
+    });
 
     try {
         const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-        if (!order) return ctx.editMessageCaption("❌ Order not found");
+        if (!order) {
+            processingOrders.delete(orderId);
+            return ctx.editMessageCaption("❌ Order not found");
+        }
 
-        let orderDetails = `📦 ORDER #${order.id}\n`;
-        orderDetails += `━━━━━━━━━━━━━━━━━━━━\n`;
-        orderDetails += `👤 User: ${order.telegram_id}\n`;
-        orderDetails += `📦 Product: ${order.product_name}\n`;
-        orderDetails += `💰 Amount: ${order.price_etb} ETB\n`;
+        let orderDetails = buildOrderDetails(order);
 
         await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
         await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support.", { parse_mode: "Markdown" });
+        
+        processingOrders.delete(orderId);
         
         await ctx.editMessageCaption(
             `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -1171,6 +1193,7 @@ if (data.startsWith("reject_")) {
 
     } catch (error) {
         console.error("Reject error:", error);
+        processingOrders.delete(orderId);
         await ctx.editMessageCaption("⚠️ Error rejecting order");
     }
 }
