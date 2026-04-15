@@ -7,6 +7,8 @@ const { createOrder, validatePlayer } = require("../services/ragner");
 
 const userState = {};
 
+
+const processingOrders = new Set(); // Track orders being processed to prevent double clicks
 // =====================
 // 🟢 PRICE ROUNDING FUNCTION
 // =====================
@@ -35,6 +37,74 @@ async function getProfitMargin(usdPrice) {
     }
 }
 
+// =====================
+// 🟢 BUILD ORDER DETAILS (for admin messages)
+// =====================
+function buildOrderDetails(order) {
+    let details = `📦 ORDER #${order.id}\n`;
+    details += `━━━━━━━━━━━━━━━━━━━━\n`;
+    
+    // Telegram User Info
+    if (order.telegram_username) {
+        details += `👤 User: @${order.telegram_username}\n`;
+    } else {
+        details += `👤 User ID: ${order.telegram_id}\n`;
+    }
+    
+    details += `📦 Product: ${order.product_name}\n`;
+    details += `💰 Amount: ${order.price_etb} ETB\n`;
+    details += `📅 Date: ${new Date(order.created_at).toLocaleString()}\n`;
+    
+    // Player Information
+    if (order.player_id) {
+        details += `\n🎮 Player ID: ${order.player_id}\n`;
+    }
+    if (order.player_name) {
+        details += `👤 Player Name: ${order.player_name}\n`;
+    }
+    
+    // User Inputs (for TikTok, Telegram Premium, etc.)
+    if (order.user_inputs) {
+        try {
+            const inputs = JSON.parse(order.user_inputs);
+            let hasInputs = false;
+            let inputsText = "\n📋 USER INFORMATION:\n";
+            
+            if (inputs.email) {
+                inputsText += `📧 Email: ${inputs.email}\n`;
+                hasInputs = true;
+            }
+            if (inputs.phone) {
+                inputsText += `📱 Phone: ${inputs.phone}\n`;
+                hasInputs = true;
+            }
+            if (inputs.username) {
+                inputsText += `👤 Username: ${inputs.username}\n`;
+                hasInputs = true;
+            }
+            if (inputs.password) {
+                inputsText += `🔐 Password: ${inputs.password}\n`;
+                hasInputs = true;
+            }
+            if (inputs.player_id && !order.player_id) {
+                inputsText += `🆔 Player ID: ${inputs.player_id}\n`;
+                hasInputs = true;
+            }
+            if (inputs.player_name && !order.player_name) {
+                inputsText += `👤 Player Name: ${inputs.player_name}\n`;
+                hasInputs = true;
+            }
+            
+            if (hasInputs) {
+                details += inputsText;
+            }
+        } catch (e) {
+            console.error("Error parsing user_inputs:", e);
+        }
+    }
+    
+    return details;
+}
 // =====================
 // 🟢 GET MAIN MENU BANNER
 // =====================
@@ -781,6 +851,7 @@ bot.on("callback_query", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from.id;
 // Handle noop (do nothing)
+// Handle noop (do nothing button - prevents double clicks)
 if (data === "noop") {
     return ctx.answerCbQuery("Please wait...");
 }
@@ -989,6 +1060,7 @@ if (data === "noop") {
 const processingOrders = new Set();
 
 // ADMIN: APPROVE - WITH DOUBLE-CLICK PROTECTION
+// ADMIN: APPROVE - WITH DOUBLE-CLICK PROTECTION
 if (data.startsWith("approve_")) {
     const orderId = data.split("_")[1];
     
@@ -1025,6 +1097,8 @@ if (data.startsWith("approve_")) {
         // Handle Ragner instant delivery
         if (order.delivery_type === "ragner") {
             console.log(`[Order ${orderId}] Processing instant delivery`);
+            console.log(`[Order ${orderId}] Product ID: ${order.external_product_id}`);
+            console.log(`[Order ${orderId}] Player ID: ${order.player_id}`);
             
             const validation = await validatePlayer(order.external_product_id, order.player_id);
             
