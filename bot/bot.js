@@ -497,7 +497,7 @@ async function processFieldInput(ctx, product, state, input) {
 }
 
 // =====================
-// 🟢 SHOW PAYMENT METHODS
+// 🟢 SHOW PAYMENT METHODS - FIXED (no Markdown)
 // =====================
 async function showPaymentMethods(ctx, productInfo) {
     const methods = await getPaymentMethods();
@@ -513,8 +513,8 @@ async function showPaymentMethods(ctx, productInfo) {
     
     buttons.push([{ text: "❌ Cancel", callback_data: "confirm_no" }]);
 
-    await ctx.editMessageText("💳 *Select Payment Method:*", {
-        parse_mode: "Markdown",
+    // Remove parse_mode to avoid Markdown errors
+    await ctx.editMessageText("💳 SELECT PAYMENT METHOD:", {
         reply_markup: { inline_keyboard: buttons }
     });
     
@@ -522,10 +522,10 @@ async function showPaymentMethods(ctx, productInfo) {
 }
 
 // =====================
-// 🟢 SHOW PAYMENT DETAILS
+// 🟢 SHOW PAYMENT DETAILS - FIXED (no Markdown)
 // =====================
 async function showPaymentDetails(ctx, paymentMethod, productInfo) {
-    const details = `💳 *Payment Details*
+    const details = `💳 PAYMENT DETAILS
 
 📦 Product: ${productInfo.name}
 💰 Amount: ${productInfo.price} ETB
@@ -536,7 +536,7 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
 
 ${paymentMethod.instructions || "Send payment screenshot here after transfer"}
 
-⚠️ *Send the screenshot in this chat*`;
+⚠️ Send the screenshot in this chat`;
 
     const userId = ctx.from.id;
     if (!userState[userId]) userState[userId] = {};
@@ -544,9 +544,11 @@ ${paymentMethod.instructions || "Send payment screenshot here after transfer"}
     userState[userId].productInfo = productInfo;
     userState[userId].step = "PAY";
 
-    await ctx.editMessageText(details, { parse_mode: "Markdown" });
+    // Remove parse_mode completely - use plain text
+    await ctx.editMessageText(details, {
+        reply_markup: { inline_keyboard: [] } // No buttons needed here, user just sends screenshot
+    });
 }
-
 // =====================
 // 🟢 SHOW MAIN MENU - REPLACES CURRENT MESSAGE
 // =====================
