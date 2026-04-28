@@ -7,6 +7,9 @@ const productRoutes = require("./routes/product.routes");
 const orderRoutes = require("./routes/order.routes");
 const settingsRoutes = require("./routes/settings.routes");
 const authRoutes = require("./routes/auth.routes");
+const giveawayRoutes = require("./routes/giveaway.routes");
+const usersRoutes = require("./routes/users.routes");
+
 
 const app = express();
 
@@ -39,6 +42,9 @@ app.use("/api/categories", authMiddleware, categoryRoutes);
 app.use("/api/products", authMiddleware, productRoutes);
 app.use("/api/orders", authMiddleware, orderRoutes);
 app.use("/api/settings", authMiddleware, settingsRoutes);
+app.use("/api/giveaway", authMiddleware, giveawayRoutes);
+app.use("/api/users", authMiddleware, usersRoutes);
+
 
 // Webhook endpoint for Telegram
 app.post("/webhook", (req, res) => {

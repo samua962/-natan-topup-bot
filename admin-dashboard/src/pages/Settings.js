@@ -15,6 +15,10 @@ export default function Settings() {
     account_name: "", 
     instructions: "" 
   });
+// Add deposit amounts management
+const [depositAmounts, setDepositAmounts] = useState([50, 100, 200, 400, 500, 1000, 2000, 4000]);
+const [newAmount, setNewAmount] = useState("");
+
 
   async function load() {
     setLoading(true);
@@ -29,6 +33,11 @@ export default function Settings() {
       const paymentRes = await API.get("/settings/payment-methods");
       setPaymentMethods(paymentRes.data.methods || []);
       
+      // Load deposit amounts
+const depositRes = res.data.find(s => s.key === "deposit_amounts");
+if (depositRes?.value) {
+    setDepositAmounts(JSON.parse(depositRes.value));
+}
       const marginRes = res.data.find(s => s.key === "profit_margins");
       if (marginRes?.value) {
         setProfitMargins(JSON.parse(marginRes.value));
@@ -51,6 +60,29 @@ export default function Settings() {
   useEffect(() => {
     load();
   }, []);
+// Save deposit amounts
+async function saveDepositAmounts() {
+    try {
+        await API.post("/settings", {
+            key: "deposit_amounts",
+            value: JSON.stringify(depositAmounts)
+        });
+        alert("Deposit amounts saved!");
+    } catch (error) {
+        alert("Failed to save");
+    }
+}
+
+function addDepositAmount() {
+    if (newAmount && !depositAmounts.includes(parseInt(newAmount))) {
+        setDepositAmounts([...depositAmounts, parseInt(newAmount)].sort((a,b) => a-b));
+        setNewAmount("");
+    }
+}
+
+function removeDepositAmount(amount) {
+    setDepositAmounts(depositAmounts.filter(a => a !== amount));
+}
 
   async function updateRate() {
     if (!rate) {
@@ -485,6 +517,28 @@ export default function Settings() {
           </button>
         </div>
       </div>
+      <div className="bg-white rounded-lg shadow p-6 mb-6">
+    <h3 className="text-lg font-semibold mb-4">💰 Deposit Amounts</h3>
+    <div className="flex flex-wrap gap-2 mb-4">
+        {depositAmounts.map(amount => (
+            <span key={amount} className="bg-gray-100 px-3 py-1 rounded-full flex items-center gap-2">
+                {amount} ETB
+                <button onClick={() => removeDepositAmount(amount)} className="text-red-500">×</button>
+            </span>
+        ))}
+    </div>
+    <div className="flex gap-2">
+        <input
+            type="number"
+            value={newAmount}
+            onChange={(e) => setNewAmount(e.target.value)}
+            placeholder="New amount"
+            className="border rounded px-3 py-1"
+        />
+        <button onClick={addDepositAmount} className="bg-green-500 text-white px-3 py-1 rounded">Add</button>
+        <button onClick={saveDepositAmounts} className="bg-blue-500 text-white px-3 py-1 rounded">Save</button>
+    </div>
+</div>
     </div>
   );
 }

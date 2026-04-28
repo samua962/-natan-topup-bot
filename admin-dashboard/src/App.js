@@ -11,6 +11,7 @@ import Orders from "./pages/Orders";
 import Categories from "./pages/Categories";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
+import Users from "./pages/Users";
 
 function ProtectedRoute({ children, isAuthenticated }) {
   if (!isAuthenticated) {
@@ -35,6 +36,11 @@ function AppContent({ isAuthenticated, setIsAuthenticated, sidebarOpen, setSideb
             <Route path="/" element={
               <ProtectedRoute isAuthenticated={isAuthenticated}>
                 <Dashboard />
+              </ProtectedRoute>
+            } />
+            <Route path="/users" element={
+              <ProtectedRoute isAuthenticated={isAuthenticated}>
+                <Users />
               </ProtectedRoute>
             } />
             <Route path="/products" element={

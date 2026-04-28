@@ -9,7 +9,8 @@ import {
   ChevronRight,
   Zap,
   Menu,
-  X
+  X,
+  PersonStanding
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -36,6 +37,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { path: "/products", name: "Products", icon: Package },
     { path: "/orders", name: "Orders", icon: ShoppingCart },
     { path: "/categories", name: "Categories", icon: FolderTree },
+    { path: "/users", name: "Users", icon: PersonStanding}, 
     { path: "/settings", name: "Settings", icon: Settings },
   ];
 
