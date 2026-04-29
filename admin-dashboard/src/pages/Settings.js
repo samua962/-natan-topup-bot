@@ -13,12 +13,11 @@ export default function Settings() {
     name: "", 
     account_number: "", 
     account_name: "", 
-    instructions: "" 
+    instructions: "",
+    image_url: ""   // ✅ added
   });
-// Add deposit amounts management
-const [depositAmounts, setDepositAmounts] = useState([50, 100, 200, 400, 500, 1000, 2000, 4000]);
-const [newAmount, setNewAmount] = useState("");
-
+  const [depositAmounts, setDepositAmounts] = useState([50, 100, 200, 400, 500, 1000, 2000, 4000]);
+  const [newAmount, setNewAmount] = useState("");
 
   async function load() {
     setLoading(true);
@@ -33,11 +32,10 @@ const [newAmount, setNewAmount] = useState("");
       const paymentRes = await API.get("/settings/payment-methods");
       setPaymentMethods(paymentRes.data.methods || []);
       
-      // Load deposit amounts
-const depositRes = res.data.find(s => s.key === "deposit_amounts");
-if (depositRes?.value) {
-    setDepositAmounts(JSON.parse(depositRes.value));
-}
+      const depositRes = res.data.find(s => s.key === "deposit_amounts");
+      if (depositRes?.value) {
+        setDepositAmounts(JSON.parse(depositRes.value));
+      }
       const marginRes = res.data.find(s => s.key === "profit_margins");
       if (marginRes?.value) {
         setProfitMargins(JSON.parse(marginRes.value));
@@ -60,29 +58,30 @@ if (depositRes?.value) {
   useEffect(() => {
     load();
   }, []);
-// Save deposit amounts
-async function saveDepositAmounts() {
+
+  // Deposit amounts functions
+  async function saveDepositAmounts() {
     try {
-        await API.post("/settings", {
-            key: "deposit_amounts",
-            value: JSON.stringify(depositAmounts)
-        });
-        alert("Deposit amounts saved!");
+      await API.post("/settings", {
+        key: "deposit_amounts",
+        value: JSON.stringify(depositAmounts)
+      });
+      alert("Deposit amounts saved!");
     } catch (error) {
-        alert("Failed to save");
+      alert("Failed to save");
     }
-}
+  }
 
-function addDepositAmount() {
+  function addDepositAmount() {
     if (newAmount && !depositAmounts.includes(parseInt(newAmount))) {
-        setDepositAmounts([...depositAmounts, parseInt(newAmount)].sort((a,b) => a-b));
-        setNewAmount("");
+      setDepositAmounts([...depositAmounts, parseInt(newAmount)].sort((a,b) => a-b));
+      setNewAmount("");
     }
-}
+  }
 
-function removeDepositAmount(amount) {
+  function removeDepositAmount(amount) {
     setDepositAmounts(depositAmounts.filter(a => a !== amount));
-}
+  }
 
   async function updateRate() {
     if (!rate) {
@@ -171,7 +170,7 @@ function removeDepositAmount(amount) {
     try {
       await API.put("/settings/payment-methods", { methods: updatedMethods });
       setPaymentMethods(updatedMethods);
-      setNewMethod({ name: "", account_number: "", account_name: "", instructions: "" });
+      setNewMethod({ name: "", account_number: "", account_name: "", instructions: "", image_url: "" });
       alert("Payment method added!");
     } catch (error) {
       alert("Failed to add");
@@ -287,7 +286,7 @@ function removeDepositAmount(amount) {
         </div>
       </div>
 
-      {/* Profit Margins Section - Mobile scrollable */}
+      {/* Profit Margins Section */}
       <div className="bg-white rounded-lg md:rounded-xl shadow-sm border border-gray-100">
         <div className="p-4 md:p-6 border-b border-gray-100">
           <div className="flex items-center">
@@ -413,7 +412,7 @@ function removeDepositAmount(amount) {
         </div>
       </div>
 
-      {/* Payment Methods Section */}
+      {/* Payment Methods Section - with image URL */}
       <div className="bg-white rounded-lg md:rounded-xl shadow-sm border border-gray-100">
         <div className="p-4 md:p-6 border-b border-gray-100">
           <div className="flex items-center">
@@ -424,12 +423,13 @@ function removeDepositAmount(amount) {
         </div>
 
         <div className="overflow-x-auto -mx-4 px-4">
-          <table className="min-w-[500px] w-full">
+          <table className="min-w-[700px] w-full">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                 <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Account Number</th>
                 <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Account Name</th>
+                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image URL</th>
                 <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
@@ -458,15 +458,28 @@ function removeDepositAmount(amount) {
                     />
                     </td>
                   <td className="px-3 md:px-6 py-3">
+                    <div className="flex flex-col gap-1">
+                      <input
+                        value={m.image_url || ""}
+                        onChange={(e) => updatePaymentMethod(m.id, "image_url", e.target.value)}
+                        placeholder="https://example.com/guide.jpg"
+                        className="w-full px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
+                      />
+                      {m.image_url && (
+                        <img src={m.image_url} alt="preview" className="h-10 w-auto rounded border" />
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-3 md:px-6 py-3">
                     <button onClick={() => deletePaymentMethod(m.id)} className="p-1 text-red-500">
                       <Trash2 size={16} />
                     </button>
-                    </td>
-                 </tr>
+                  </td>
+                </tr>
               ))}
               {paymentMethods.length === 0 && (
                 <tr>
-                  <td colSpan="4" className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
                     No payment methods yet.
                   </td>
                 </tr>
@@ -506,6 +519,13 @@ function removeDepositAmount(amount) {
               onChange={(e) => setNewMethod({ ...newMethod, instructions: e.target.value })}
               className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
             />
+            <input
+              type="text"
+              placeholder="Image URL (optional) – guide screenshot"
+              value={newMethod.image_url}
+              onChange={(e) => setNewMethod({ ...newMethod, image_url: e.target.value })}
+              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm col-span-1 sm:col-span-2"
+            />
           </div>
           <button
             onClick={addPaymentMethod}
@@ -517,28 +537,30 @@ function removeDepositAmount(amount) {
           </button>
         </div>
       </div>
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-    <h3 className="text-lg font-semibold mb-4">💰 Deposit Amounts</h3>
-    <div className="flex flex-wrap gap-2 mb-4">
-        {depositAmounts.map(amount => (
+
+      {/* Deposit Amounts Section */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold mb-4">💰 Deposit Amounts</h3>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {depositAmounts.map(amount => (
             <span key={amount} className="bg-gray-100 px-3 py-1 rounded-full flex items-center gap-2">
-                {amount} ETB
-                <button onClick={() => removeDepositAmount(amount)} className="text-red-500">×</button>
+              {amount} ETB
+              <button onClick={() => removeDepositAmount(amount)} className="text-red-500">×</button>
             </span>
-        ))}
-    </div>
-    <div className="flex gap-2">
-        <input
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
             type="number"
             value={newAmount}
             onChange={(e) => setNewAmount(e.target.value)}
             placeholder="New amount"
             className="border rounded px-3 py-1"
-        />
-        <button onClick={addDepositAmount} className="bg-green-500 text-white px-3 py-1 rounded">Add</button>
-        <button onClick={saveDepositAmounts} className="bg-blue-500 text-white px-3 py-1 rounded">Save</button>
-    </div>
-</div>
+          />
+          <button onClick={addDepositAmount} className="bg-green-500 text-white px-3 py-1 rounded">Add</button>
+          <button onClick={saveDepositAmounts} className="bg-blue-500 text-white px-3 py-1 rounded">Save</button>
+        </div>
+      </div>
     </div>
   );
 }

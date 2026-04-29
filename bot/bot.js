@@ -24,7 +24,20 @@ function parseUserInputs(input) {
     }
     return input; // already an object (JSONB)
 }
-
+function getTxIdHint(methodName) {
+    const name = methodName.toLowerCase();
+    if (name.includes("telebirr")) {
+        return "📱 After payment, Telebirr will send you an SMS. Copy the transaction ID (e.g., FT26062K7WMY) from that message.";
+    } else if (name.includes("cbe")) {
+        return "🏦 After payment, CBE Birr will show a transaction reference. Copy the FT number from the receipt or SMS.";
+    } else if (name.includes("abyssinia") || name.includes("boa")) {
+        return "🏦 After payment, Bank of Abyssinia will give you a receipt with transaction ID. Copy the FT reference.";
+    } else if (name.includes("ebirr")) {
+        return "📱 After payment, eBirr will show a transaction ID. Copy it from the app or SMS.";
+    } else {
+        return "📝 After payment, copy the transaction ID / reference number from your bank app or SMS.";
+    }
+}
 // =====================
 // 🟢 HELPER: PARSE SHEGERPAY TIMESTAMP
 // =====================
@@ -793,15 +806,51 @@ async function showBankTransferMethods(ctx, productInfo) {
 // 🟢 SHOW PAYMENT DETAILS
 // =====================
 async function showPaymentDetails(ctx, paymentMethod, productInfo) {
-    const details = `💳 PAYMENT DETAILS\n\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n\n🏦 ${paymentMethod.name}\n📞 Account: ${paymentMethod.account_number}\n👤 Name: ${paymentMethod.account_name || "N/A"}\n\n${paymentMethod.instructions || "Send payment screenshot here after transfer"}\n\n⚠️ Send the screenshot in this chat`;
+    const shortCaption = `
+📦 Product: ${productInfo.name}
+💰 Amount: ${productInfo.price} ETB
+
+🏦 ${paymentMethod.name}
+📞 Account: ${paymentMethod.account_number}
+👤 Name: ${paymentMethod.account_name || "N/A"}
+
+${paymentMethod.instructions || ""}
+
+━━━━━━━━━━━━━━━━━━━━
+⚠️ LEGAL WARNING:
+By paying, you confirm you are 18+ and agree to our Terms.
+ክፍያ ሲፈጽሙ ዕድሜዎ 18+ መሆኑን እና በደንቡ መስማማትዎን ያረጋግጣሉ።
+
+🔹 INSTRUCTIONS:
+1️⃣ Copy account & verify name.
+2️⃣ Send EXACTLY ${productInfo.price} ETB only.
+3️⃣ After payment, copy the Transaction ID from your bank app or SMS (see image above).
+4️⃣ Send payment screenshot here.
+5️⃣ Then paste the Transaction ID.
+
+🔹 አማርኛ መመሪያ:
+1️⃣ አካውንቱን ኮፒ አድርገው ስሙን ያረጋግጡ።
+2️⃣ ትክክለኛውን ${productInfo.price} ብር ብቻ ይላኩ።
+3️⃣ ክፍያ ከፈጸሙ በኋላ የትራንዛክሽን መለያ (Transaction ID) ይቅዱ (ከላይ ባለው ምስል ይመልከቱ)።
+4️⃣ ስክሪንሾቱን እዚህ ይላኩ።
+5️⃣ ከዚያ የትራንዛክሽን መለያውን ይላኩ።
+
+⏳ Order expires in 30 minutes.
+    `;
+
     const userId = ctx.from.id;
     if (!userState[userId]) userState[userId] = {};
     userState[userId].paymentMethod = paymentMethod;
     userState[userId].productInfo = productInfo;
     userState[userId].step = "PAY";
-    await ctx.editMessageText(details, { reply_markup: { inline_keyboard: [] } });
-}
 
+    // If payment method has an image, send it with the short caption; otherwise send the caption as text
+    if (paymentMethod.image_url && paymentMethod.image_url.trim() !== "") {
+        await ctx.replyWithPhoto(paymentMethod.image_url, { caption: shortCaption });
+    } else {
+        await ctx.reply(shortCaption);
+    }
+}
 // =====================
 // 🟢 PROCESS WALLET PAYMENT
 // =====================
@@ -1580,17 +1629,7 @@ bot.on("text", async (ctx) => {
     const state = userState[userId];
 
     // Handle transaction ID input for deposit or payment
-    if (state && state.step === "AWAITING_TX_ID") {
-        const txId = ctx.message.text.trim();
-        if (!txId) {
-            await ctx.reply("❌ Please enter a valid transaction ID.");
-            return;
-        }
-
-        // Show "validating" message to user
-        const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.");
-
-    if (state.depositPending) {
+   if (state && state.step === "AWAITING_TX_ID") {
     const txId = ctx.message.text.trim();
     if (!txId) {
         await ctx.reply("❌ Please enter a valid transaction ID.");
@@ -1599,156 +1638,166 @@ bot.on("text", async (ctx) => {
 
     const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.");
 
-    // Check duplicate
-    const existing = await db.query(
-        "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-        [txId]
-    );
-    if (existing.rows.length > 0) {
-        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous deposit.");
-        return;
-    }
-
-    const depositAmount = state.depositAmount;
-    const method = state.depositMethod; // ✅ define method from state
-    const providerMap = {
-        "telebirr": "telebirr",
-        "cbe": "cbe",
-        "awash": "awash",
-        "dashen": "dashen",
-        "abyssinia": "boa",
-        "boa": "boa",
-        "ebirr": "ebirr_kaafi",
-        "e-birr": "ebirr_kaafi"
-    };
-    const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
-    const expectedRecipient = method.account_number;
-
-    const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
-
-    if (verification.verified) {
-        const result = await db.query(
-            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-             VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
-            [userId, depositAmount, method.name, state.tempFileId, txId]
+    if (state.depositPending) {
+        // ----- DEPOSIT FLOW -----
+        const existing = await db.query(
+            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
+            [txId]
         );
-        const depositId = result.rows[0].id;
-        await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
-        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`);
-        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
-        delete userState[userId];
-    } else {
-        const result = await db.query(
-            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-             VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
-            [userId, depositAmount, method.name, state.tempFileId, txId]
-        );
-        const depositId = result.rows[0].id;
-        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.");
-        await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-            caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
-            reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
-        });
-        delete userState[userId];
-    }
-    return;
-}
-        else if (state.orderPending) {
-            // ----- PRODUCT ORDER FLOW (Bank Transfer) -----
-            const orderId = state.orderId;
-            const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
-            if (!order) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Order not found. Please contact support.");
-                delete userState[userId];
-                return;
-            }
-            const existingOrder = await db.query(
-                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
-                [txId]
+        if (existing.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous deposit.");
+            return;
+        }
+
+        const depositAmount = state.depositAmount;
+        const method = state.depositMethod;
+        const providerMap = {
+            "telebirr": "telebirr",
+            "cbe": "cbe",
+            "awash": "awash",
+            "dashen": "dashen",
+            "abyssinia": "boa",
+            "boa": "boa",
+            "ebirr": "ebirr_kaafi",
+            "e-birr": "ebirr_kaafi"
+        };
+        const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
+        const expectedRecipient = method.account_number;
+
+        const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
+
+        if (verification.verified) {
+            const result = await db.query(
+                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
+                 VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
+                [userId, depositAmount, method.name, state.tempFileId, txId]
             );
-            if (existingOrder.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous order.");
-                return;
-            }
-  const providerMap = {
-    "telebirr": "telebirr",
-    "cbe": "cbe",
-    "awash": "awash",
-    "dashen": "dashen",
-    "abyssinia": "boa",
-    "boa": "boa",
-    "ebirr": "ebirr_kaafi",
-    "e-birr": "ebirr_kaafi"
-};
-const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
-            const methods = await getPaymentMethods();
-            const selectedMethod = methods.find(m => m.name.toLowerCase() === state.paymentMethodName?.toLowerCase());
-            const expectedRecipient = selectedMethod?.account_number || null;
-           const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod.account_name, expectedRecipient);
+            const depositId = result.rows[0].id;
+            await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`);
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
+            delete userState[userId];
+        } else {
+            const result = await db.query(
+                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
+                 VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
+                [userId, depositAmount, method.name, state.tempFileId, txId]
+            );
+            const depositId = result.rows[0].id;
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.");
+            await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
+                caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
+                reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
+            });
+            delete userState[userId];
+        }
+        return;
+    } 
+    else if (state.orderPending) {
+        // ----- PRODUCT ORDER FLOW (Bank Transfer) -----
+        const orderId = state.orderId;
+        const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
+        if (!order) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Order not found. Please contact support.");
+            delete userState[userId];
+            return;
+        }
 
-            if (verification.verified) {
-                await db.query(`UPDATE orders SET verified_by_shegerpay = true, transaction_id = $1 WHERE id = $2`, [txId, orderId]);
-                if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
-                    const ragnerResult = await createOrder(order.external_product_id, order.player_id);
-                    if (ragnerResult && ragnerResult.success) {
-                        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "🎮 UC Delivered Successfully! (Payment auto-verified)");
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Order #${orderId} auto-verified and auto-completed (Instant product)\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`);
-                    } else {
-                        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Delivery in progress. You will be notified when completed.");
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `🟡 Order #${orderId} payment auto-verified, but instant delivery failed. Please complete manually.\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`, {
-                            reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
-                        });
-                    }
+        const existingOrder = await db.query(
+            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
+            [txId]
+        );
+        if (existingOrder.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous order.");
+            return;
+        }
+
+        // Get the payment method used for this order
+        const methods = await getPaymentMethods();
+        const paymentMethodName = state.paymentMethodName || "Bank Transfer";
+        const selectedMethod = methods.find(m => m.name.toLowerCase() === paymentMethodName.toLowerCase());
+        if (!selectedMethod) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Payment method not found. Please contact support.");
+            delete userState[userId];
+            return;
+        }
+
+        const providerMap = {
+            "telebirr": "telebirr",
+            "cbe": "cbe",
+            "awash": "awash",
+            "dashen": "dashen",
+            "abyssinia": "boa",
+            "boa": "boa",
+            "ebirr": "ebirr_kaafi",
+            "e-birr": "ebirr_kaafi"
+        };
+        const provider = providerMap[selectedMethod.name.trim().toLowerCase()] || "telebirr";
+        const expectedRecipient = selectedMethod.account_number;
+        const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod.account_name, expectedRecipient);
+
+        if (verification.verified) {
+            await db.query(`UPDATE orders SET verified_by_shegerpay = true, transaction_id = $1 WHERE id = $2`, [txId, orderId]);
+            if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
+                const ragnerResult = await createOrder(order.external_product_id, order.player_id);
+                if (ragnerResult && ragnerResult.success) {
+                    await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "🎮 UC Delivered Successfully! (Payment auto-verified)");
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Order #${orderId} auto-verified and auto-completed (Instant product)\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`);
                 } else {
                     await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.");
-                    let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
-                    if (order.player_id) adminMsg += `🎮 Player ID: ${order.player_id}\n`;
-                    if (order.user_inputs) {
-                        const inputs = parseUserInputs(order.user_inputs);
-                        if (inputs) {
-                            if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
-                            if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
-                            if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
-                        }
-                    }
-                    adminMsg += `\n👇 Click "Complete" after manual delivery.`;
-                    await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                        caption: adminMsg,
+                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Delivery in progress. You will be notified when completed.");
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, `🟡 Order #${orderId} payment auto-verified, but instant delivery failed. Please complete manually.\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`, {
                         reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                     });
                 }
             } else {
-                // Fallback – store transaction ID
-                await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
-                let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
+                await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.");
+                let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
+                if (order.player_id) adminMsg += `🎮 Player ID: ${order.player_id}\n`;
                 if (order.user_inputs) {
                     const inputs = parseUserInputs(order.user_inputs);
                     if (inputs) {
-                        if (inputs.email) caption += `\n📧 Email: ${inputs.email}\n`;
-                        if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
-                        if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
-                        if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
+                        if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
+                        if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
+                        if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
                     }
                 }
-                caption += `\n💳 Payment Method: ${state.paymentMethodName || "Bank Transfer"}\n⚠️ Auto-verification failed: ${verification.error}\n\nUse buttons below to manage:`;
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your payment.");
+                adminMsg += `\n👇 Click "Complete" after manual delivery.`;
                 await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                    caption: caption,
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
-                            [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
-                        ],
-                    },
+                    caption: adminMsg,
+                    reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                 });
             }
-            delete userState[userId];
-            return;
+        } else {
+            await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
+            let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
+            if (order.user_inputs) {
+                const inputs = parseUserInputs(order.user_inputs);
+                if (inputs) {
+                    if (inputs.email) caption += `📧 Email: ${inputs.email}\n`;
+                    if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
+                    if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
+                    if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
+                }
+            }
+            caption += `\n💳 Payment Method: ${state.paymentMethodName || "Bank Transfer"}\n⚠️ Auto-verification failed: ${verification.error}\n\nUse buttons below to manage:`;
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your payment.");
+            await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
+                caption: caption,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
+                        [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
+                    ],
+                },
+            });
         }
+        delete userState[userId];
+        return;
     }
+}
 
     // Handle player ID input
     if (!state || state.step !== "PLAYER") return;
