@@ -1184,6 +1184,10 @@ bot.on("callback_query", async (ctx) => {
 
     // ----- DEPOSIT FLOW -----
     if (data.startsWith("deposit_paymethod_")) {
+        // Clear any previous order state
+delete userState[userId].orderPending;
+delete userState[userId].orderId;
+delete userState[userId].productInfo;
         const parts = data.split("_");
         const methodId = parseInt(parts[2]);
         const amount = parseInt(parts[3]);
@@ -1345,6 +1349,10 @@ if (data.startsWith("pay_wallet_")) {
     // PAY WITH BANK TRANSFER
 // PAY WITH BANK TRANSFER
 if (data.startsWith("pay_bank_")) {
+    // Clear any previous deposit state
+delete userState[userId].depositPending;
+delete userState[userId].depositAmount;
+delete userState[userId].depositMethod;
     const parts = data.split("_");
     const productId = parts[2];
     const price = parseFloat(parts[3]);
@@ -1582,59 +1590,69 @@ bot.on("text", async (ctx) => {
         // Show "validating" message to user
         const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.");
 
-        if (state.depositPending) {
-            // ----- DEPOSIT FLOW -----
-            const existing = await db.query(
-                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-                [txId]
-            );
-            if (existing.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous deposit.");
-                return;
-            }
-            const depositAmount = state.depositAmount;
-            const method = state.depositMethod;
-     const providerMap = {
-    "telebirr": "telebirr",
-    "cbe": "cbe",
-    "awash": "awash",
-    "dashen": "dashen",
-    "abyssinia": "boa",
-    "boa": "boa",
-    "ebirr": "ebirr_kaafi",
-    "e-birr": "ebirr_kaafi"
-};
-const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
-            const expectedRecipient = method.account_number;
-            const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
+    if (state.depositPending) {
+    const txId = ctx.message.text.trim();
+    if (!txId) {
+        await ctx.reply("❌ Please enter a valid transaction ID.");
+        return;
+    }
 
-            if (verification.verified) {
-                const result = await db.query(
-                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-                     VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
-                    [userId, depositAmount, method.name, state.tempFileId, txId]
-                );
-                const depositId = result.rows[0].id;
-                await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`);
-                await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
-                delete userState[userId];
-            } else {
-                const result = await db.query(
-                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-                     VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
-                    [userId, depositAmount, method.name, state.tempFileId, txId]
-                );
-                const depositId = result.rows[0].id;
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.");
-                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                    caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
-                    reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
-                });
-                delete userState[userId];
-            }
-            return;
-        } 
+    const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.");
+
+    // Check duplicate
+    const existing = await db.query(
+        "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
+        [txId]
+    );
+    if (existing.rows.length > 0) {
+        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous deposit.");
+        return;
+    }
+
+    const depositAmount = state.depositAmount;
+    const method = state.depositMethod; // ✅ define method from state
+    const providerMap = {
+        "telebirr": "telebirr",
+        "cbe": "cbe",
+        "awash": "awash",
+        "dashen": "dashen",
+        "abyssinia": "boa",
+        "boa": "boa",
+        "ebirr": "ebirr_kaafi",
+        "e-birr": "ebirr_kaafi"
+    };
+    const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
+    const expectedRecipient = method.account_number;
+
+    const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
+
+    if (verification.verified) {
+        const result = await db.query(
+            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
+             VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
+            [userId, depositAmount, method.name, state.tempFileId, txId]
+        );
+        const depositId = result.rows[0].id;
+        await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
+        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`);
+        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
+        delete userState[userId];
+    } else {
+        const result = await db.query(
+            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
+             VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
+            [userId, depositAmount, method.name, state.tempFileId, txId]
+        );
+        const depositId = result.rows[0].id;
+        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.");
+        await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
+            caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
+            reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
+        });
+        delete userState[userId];
+    }
+    return;
+}
         else if (state.orderPending) {
             // ----- PRODUCT ORDER FLOW (Bank Transfer) -----
             const orderId = state.orderId;
