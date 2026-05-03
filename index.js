@@ -43,14 +43,15 @@ adminApp.listen(PORT, () => {
     console.log("Admin API running on port", PORT);
 });
 
-// Start bot with webhook (Telegram)
-const TELEGRAM_WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
-  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook/telegram`
+
+
+const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
   : null;
 
-if (TELEGRAM_WEBHOOK_URL) {
-    bot.telegram.setWebhook(TELEGRAM_WEBHOOK_URL);
-    console.log("Telegram webhook set to:", TELEGRAM_WEBHOOK_URL);
+if (WEBHOOK_URL) {
+    bot.telegram.setWebhook(WEBHOOK_URL);
+    console.log("Telegram webhook set to:", WEBHOOK_URL);
 } else {
     bot.launch();
     console.log("Bot started with polling");
