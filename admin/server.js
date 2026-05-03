@@ -18,9 +18,21 @@ app.use(cors());
 // IMPORTANT: ShegerPay webhook needs RAW body for signature verification
 // This must come BEFORE express.json()
 app.use("/webhook/shegerpay", express.raw({ type: "application/json" }), (req, res, next) => {
-    req.rawBody = req.body.toString();
-    // Parse the body back to JSON for easy use
-    req.body = JSON.parse(req.body.toString());
+    if (Buffer.isBuffer(req.body)) {
+        req.rawBody = req.body.toString("utf8");
+    } else if (typeof req.body === "string") {
+        req.rawBody = req.body;
+    } else {
+        req.rawBody = JSON.stringify(req.body);
+    }
+
+    try {
+        req.body = JSON.parse(req.rawBody);
+    } catch (error) {
+        console.error("Failed to parse ShegerPay webhook raw body:", error.message);
+        return res.status(400).send("Invalid JSON");
+    }
+
     next();
 });
 

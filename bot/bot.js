@@ -1677,7 +1677,7 @@ if (state && state.step === "AWAITING_TX_ID") {
             "ebirr": "ebirr_kaafi",
             "e-birr": "ebirr_kaafi"
         };
-        const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
+        const provider = providerMap[method.name.trim().toLowerCase()];
         const expectedRecipient = method.account_number;
 
         // Store transaction ID first (so webhook can find it)

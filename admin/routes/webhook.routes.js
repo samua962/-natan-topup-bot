@@ -3,12 +3,36 @@ const router = express.Router();
 const crypto = require("crypto");
 const db = require("../../database/db");
 
+// Helper: normalize webhook signature header
+function normalizeSignatureHeader(signatureHeader) {
+    if (!signatureHeader || typeof signatureHeader !== "string") return null;
+    return signatureHeader.trim().replace(/^sha256=/i, "").trim();
+}
+
 // Helper: verify webhook signature
 function verifyWebhookSignature(body, signatureHeader, secret) {
     if (!signatureHeader || !secret) return false;
-    const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-    const provided = signatureHeader.replace('sha256=', '');
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
+
+    const provided = normalizeSignatureHeader(signatureHeader);
+    if (!provided) return false;
+
+    const normalizedSecret = typeof secret === "string" ? secret.trim() : secret;
+    const expected = crypto.createHmac("sha256", normalizedSecret).update(body, "utf8").digest();
+
+    let providedBuffer;
+    if (/^[0-9a-f]{64}$/i.test(provided)) {
+        providedBuffer = Buffer.from(provided, "hex");
+    } else if (/^[A-Za-z0-9+/=]+$/.test(provided)) {
+        providedBuffer = Buffer.from(provided, "base64");
+    } else {
+        return false;
+    }
+
+    if (providedBuffer.length !== expected.length) {
+        return false;
+    }
+
+    return crypto.timingSafeEqual(expected, providedBuffer);
 }
 
 // Helper: get pending deposit by transaction ID
@@ -76,12 +100,16 @@ async function updateWalletBalance(telegramId, amount, type, referenceId, descri
 // ShegerPay webhook endpoint
 router.post("/shegerpay", async (req, res) => {
     // Get the raw body (set by middleware in server.js)
-    const rawBody = req.rawBody;
+    const rawBody = req.rawBody || JSON.stringify(req.body);
     const signature = req.headers["x-shegerpay-signature"];
     const event = req.headers["x-shegerpay-event"];
     const data = req.body.data || req.body;
     
-    console.log("📨 ShegerPay webhook received:", { event, signature: signature ? "present" : "missing" });
+    console.log("📨 ShegerPay webhook received:", {
+        event,
+        signature: signature ? "present" : "missing",
+        rawBodyPresent: Boolean(rawBody),
+    });
     
     // Get webhook secret from database
     const secretResult = await db.query("SELECT value FROM settings WHERE key='shegerpay_webhook_secret'");
