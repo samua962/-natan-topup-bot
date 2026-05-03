@@ -25,7 +25,7 @@ function parseUserInputs(input) {
     return input; // already an object (JSONB)
 }
 function getTxIdHint(methodName) {
-    const name = methodName.toLowerCase();
+    const name = methodName?.toString().trim().toLowerCase() || "";
     if (name.includes("telebirr")) {
         return "📱 After payment, Telebirr will send you an SMS. Copy the transaction ID (e.g., FT26062K7WMY) from that message.";
     } else if (name.includes("cbe")) {
@@ -38,6 +38,19 @@ function getTxIdHint(methodName) {
         return "📝 After payment, copy the transaction ID / reference number from your bank app or SMS.";
     }
 }
+
+function resolveShegerPayProvider(methodName) {
+    const name = methodName?.toString().trim().toLowerCase() || "";
+    if (!name) return null;
+    if (name.includes("telebirr")) return "telebirr";
+    if (name.includes("cbe")) return "cbe";
+    if (name.includes("awash")) return "awash";
+    if (name.includes("dashen")) return "dashen";
+    if (name.includes("abyssinia") || name.includes("boa")) return "boa";
+    if (name.includes("ebirr") || name.includes("e-birr")) return "ebirr_kaafi";
+    return null;
+}
+
 // =====================
 // 🟢 HELPER: PARSE SHEGERPAY TIMESTAMP
 // =====================
@@ -60,10 +73,15 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
     const maxRetries = 1;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
+            const normalizedProvider = provider?.toString().trim().toLowerCase();
+            if (!normalizedProvider) {
+                return { verified: false, error: "Payment provider could not be determined" };
+            }
+
             const response = await axios.post(
                 "https://api.shegerpay.com/api/v1/verify",
                 {
-                    provider: provider.toLowerCase(),
+                    provider: normalizedProvider,
                     transaction_id: transactionId,
                     amount: expectedAmount,
                     merchant_name: merchantName,
@@ -1667,18 +1685,8 @@ if (state && state.step === "AWAITING_TX_ID") {
 
         const depositAmount = state.depositAmount;
         const method = state.depositMethod;
-        const providerMap = {
-            "telebirr": "telebirr",
-            "cbe": "cbe",
-            "awash": "awash",
-            "dashen": "dashen",
-            "abyssinia": "boa",
-            "boa": "boa",
-            "ebirr": "ebirr_kaafi",
-            "e-birr": "ebirr_kaafi"
-        };
-        const provider = providerMap[method.name.trim().toLowerCase()];
-        const expectedRecipient = method.account_number;
+        const provider = resolveShegerPayProvider(method?.name) || "telebirr";
+        const expectedRecipient = method?.account_number || null;
 
         // Store transaction ID first (so webhook can find it)
         userState[userId].tempTxId = txId;
@@ -1750,19 +1758,12 @@ if (state && state.step === "AWAITING_TX_ID") {
         // Store transaction ID
         await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
 
-        const providerMap = {
-            "telebirr": "telebirr",
-            "cbe": "cbe",
-            "awash": "awash",
-            "dashen": "dashen",
-            "abyssinia": "boa",
-            "boa": "boa",
-            "ebirr": "ebirr_kaafi",
-            "e-birr": "ebirr_kaafi"
-        };
-        const provider = providerMap[state.paymentMethodName?.toLowerCase()] || "telebirr";
+        const provider = resolveShegerPayProvider(state.paymentMethodName) || "telebirr";
+        const normalizedMethodName = state.paymentMethodName?.toString().trim().toLowerCase() || "";
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find(m => m.name.toLowerCase() === state.paymentMethodName?.toLowerCase());
+        const selectedMethod = methods.find(m => m.name.toString().trim().toLowerCase() === normalizedMethodName)
+            || methods.find(m => m.name.toString().trim().toLowerCase().includes(normalizedMethodName))
+            || methods.find(m => normalizedMethodName.includes(m.name.toString().trim().toLowerCase()));
         const expectedRecipient = selectedMethod?.account_number || null;
 
         const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod?.account_name, expectedRecipient);
