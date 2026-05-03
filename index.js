@@ -6,14 +6,19 @@ const adminApp = require("./admin/server");
 
 const PORT = process.env.PORT || 5000;
 
-// Middleware to preserve raw body for webhook signature verification
-adminApp.use(express.json({
+// IMPORTANT: Telegram webhook needs raw body for signature verification
+// But ShegerPay webhook also needs raw body
+// We'll handle them separately
+
+// Middleware to preserve raw body for ShegerPay webhook specifically
+adminApp.use('/webhook/shegerpay', express.json({
     verify: (req, res, buf, encoding) => {
-        if (req.originalUrl === '/webhook/shegerpay') {
-            req.rawBody = buf.toString();
-        }
+        req.rawBody = buf.toString();
     }
 }));
+
+// For other routes, use normal JSON
+adminApp.use(express.json());
 
 // Serve static files from React build
 const reactBuildPath = path.join(__dirname, "admin-dashboard", "build");
@@ -38,14 +43,14 @@ adminApp.listen(PORT, () => {
     console.log("Admin API running on port", PORT);
 });
 
-// Start bot with webhook
-const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
-  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook/shegerpay`
+// Start bot with webhook (Telegram)
+const TELEGRAM_WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook/telegram`
   : null;
 
-if (WEBHOOK_URL) {
-    bot.telegram.setWebhook(WEBHOOK_URL);
-    console.log("Webhook set to:", WEBHOOK_URL);
+if (TELEGRAM_WEBHOOK_URL) {
+    bot.telegram.setWebhook(TELEGRAM_WEBHOOK_URL);
+    console.log("Telegram webhook set to:", TELEGRAM_WEBHOOK_URL);
 } else {
     bot.launch();
     console.log("Bot started with polling");

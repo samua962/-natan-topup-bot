@@ -9,15 +9,29 @@ const settingsRoutes = require("./routes/settings.routes");
 const authRoutes = require("./routes/auth.routes");
 const usersRoutes = require("./routes/users.routes");
 const giveawayRoutes = require("./routes/giveaway.routes");
-const webhookRoutes = require("./routes/webhook.routes");  // ✅ ADD THIS
+const webhookRoutes = require("./routes/webhook.routes");
 
 const app = express();
 
 app.use(cors());
-app.use(bodyParser.json());
 
-// Webhook routes (no authentication required, but must be raw body for signature verification)
-app.use("/webhook", webhookRoutes);  // ✅ ADD THIS
+// IMPORTANT: Order matters!
+// First, handle Telegram webhook (needs raw body for bot)
+// This must come BEFORE express.json()
+app.post('/webhook/telegram', express.raw({ type: 'application/json' }), (req, res) => {
+    // Forward to bot
+    bot.handleUpdate(req.body, res);
+});
+
+// Then ShegerPay webhook (also needs raw body for signature verification)
+app.use('/webhook/shegerpay', express.json({
+    verify: (req, res, buf, encoding) => {
+        req.rawBody = buf.toString();
+    }
+}), webhookRoutes);
+
+// Then regular JSON for API routes
+app.use(express.json());
 
 // Public routes
 app.use("/api/auth", authRoutes);
@@ -47,5 +61,8 @@ app.use("/api/orders", authMiddleware, orderRoutes);
 app.use("/api/settings", authMiddleware, settingsRoutes);
 app.use("/api/users", authMiddleware, usersRoutes);
 app.use("/api/giveaway", authMiddleware, giveawayRoutes);
+
+// Need bot instance for webhook
+const bot = require("../bot/bot");
 
 module.exports = app;
