@@ -6,22 +6,31 @@ const adminApp = require("./admin/server");
 
 const PORT = process.env.PORT || 5000;
 
+// Middleware to preserve raw body for webhook signature verification
+adminApp.use(express.json({
+    verify: (req, res, buf, encoding) => {
+        if (req.originalUrl === '/webhook/shegerpay') {
+            req.rawBody = buf.toString();
+        }
+    }
+}));
+
 // Serve static files from React build
 const reactBuildPath = path.join(__dirname, "admin-dashboard", "build");
 
-// Check if build exists
 const fs = require("fs");
 if (fs.existsSync(reactBuildPath)) {
     console.log("✅ React build found at:", reactBuildPath);
     adminApp.use(express.static(reactBuildPath));
     
-    // Serve index.html for all non-API routes - FIXED: Use regex or function instead of "*"
-    adminApp.get(/^\/(?!api|webhook).*/, (req, res) => {
+    adminApp.use((req, res, next) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) {
+            return next();
+        }
         res.sendFile(path.join(reactBuildPath, "index.html"));
     });
 } else {
     console.log("⚠️ React build not found at:", reactBuildPath);
-    console.log("Make sure to run: cd admin-dashboard && npm run build");
 }
 
 // Start express
@@ -31,7 +40,7 @@ adminApp.listen(PORT, () => {
 
 // Start bot with webhook
 const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
-  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook/shegerpay`
   : null;
 
 if (WEBHOOK_URL) {

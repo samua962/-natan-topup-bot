@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import API from "../api/api";
-import { Save, Plus, Trash2, DollarSign, CreditCard, TrendingUp, Image } from "lucide-react";
+import { Save, Plus, Trash2, DollarSign, CreditCard, TrendingUp, Image, Lock } from "lucide-react";
 
 export default function Settings() {
   const [rate, setRate] = useState("");
@@ -14,10 +14,15 @@ export default function Settings() {
     account_number: "", 
     account_name: "", 
     instructions: "",
-    image_url: ""   // ✅ added
+    image_url: ""
   });
   const [depositAmounts, setDepositAmounts] = useState([50, 100, 200, 400, 500, 1000, 2000, 4000]);
   const [newAmount, setNewAmount] = useState("");
+  
+  // Webhook state
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [generatedSecret, setGeneratedSecret] = useState("");
+  const [savingWebhook, setSavingWebhook] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -48,6 +53,12 @@ export default function Settings() {
           ]
         });
       }
+      
+      // Load webhook secret
+      const webhookRes = await API.get("/settings/webhook-secret");
+      if (webhookRes.data.secret) {
+        setWebhookSecret(webhookRes.data.secret);
+      }
     } catch (error) {
       console.error("Load error:", error);
       alert("Failed to load settings");
@@ -58,6 +69,30 @@ export default function Settings() {
   useEffect(() => {
     load();
   }, []);
+
+  // Generate random secret
+  function generateRandomSecret() {
+    const secret = [...Array(32)].map(() => Math.random().toString(36)[2]).join('');
+    setGeneratedSecret(secret);
+    setWebhookSecret(secret);
+  }
+
+  // Save webhook secret
+  async function saveWebhookSecret() {
+    if (!webhookSecret || webhookSecret.length < 32) {
+      alert("Secret must be at least 32 characters");
+      return;
+    }
+    setSavingWebhook(true);
+    try {
+      await API.post("/settings/webhook-secret", { secret: webhookSecret });
+      alert("Webhook secret saved!");
+    } catch (error) {
+      console.error("Save webhook secret error:", error);
+      alert("Failed to save webhook secret");
+    }
+    setSavingWebhook(false);
+  }
 
   // Deposit amounts functions
   async function saveDepositAmounts() {
@@ -211,7 +246,7 @@ export default function Settings() {
     <div className="space-y-4 md:space-y-6">
       <div>
         <h2 className="text-xl md:text-2xl font-bold text-gray-800">Settings</h2>
-        <p className="text-sm text-gray-500">Configure exchange rates, banner, profit margins, and payment methods</p>
+        <p className="text-sm text-gray-500">Configure exchange rates, banner, profit margins, payment methods, and webhook</p>
       </div>
 
       {/* Main Menu Banner Section */}
@@ -349,8 +384,9 @@ export default function Settings() {
                     <button onClick={() => deleteProfitMargin(index)} className="p-1 text-red-500">
                       <Trash2 size={16} />
                     </button>
-                    </td>
-                 </tr>
+                  </td>
+                </tr>
+            
               ))}
             </tbody>
           </table>
@@ -412,7 +448,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Payment Methods Section - with image URL */}
+      {/* Payment Methods Section */}
       <div className="bg-white rounded-lg md:rounded-xl shadow-sm border border-gray-100">
         <div className="p-4 md:p-6 border-b border-gray-100">
           <div className="flex items-center">
@@ -535,6 +571,56 @@ export default function Settings() {
             <Plus size={16} className="mr-2" />
             Add Payment Method
           </button>
+        </div>
+      </div>
+
+      {/* Webhook Configuration Section */}
+      <div className="bg-white rounded-lg md:rounded-xl shadow-sm border border-gray-100">
+        <div className="p-4 md:p-6 border-b border-gray-100">
+          <div className="flex items-center">
+            <Lock className="h-5 w-5 text-red-500 mr-2" />
+            <h3 className="text-base md:text-lg font-semibold text-gray-800">ShegerPay Webhook</h3>
+          </div>
+          <p className="text-xs md:text-sm text-gray-500 mt-1">Configure webhook for automatic payment verification</p>
+        </div>
+        <div className="p-4 md:p-6">
+          <div className="flex flex-col gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Webhook Secret</label>
+              <input
+                type="text"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+                placeholder="Enter a secure secret (min 32 characters)"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm font-mono"
+              />
+              <p className="text-xs text-gray-500 mt-1">Used to verify that webhooks are coming from ShegerPay</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={generateRandomSecret}
+                className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 text-sm"
+              >
+                Generate Random Secret
+              </button>
+              <button
+                onClick={saveWebhookSecret}
+                disabled={savingWebhook}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 text-sm"
+              >
+                {savingWebhook ? "Saving..." : "Save Webhook Secret"}
+              </button>
+            </div>
+            <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+              <p className="text-xs text-gray-600 mb-2">📋 Your webhook URL for ShegerPay dashboard:</p>
+              <code className="text-xs bg-gray-100 px-2 py-1 rounded block break-all font-mono">
+                {window.location.origin}/webhook/shegerpay
+              </code>
+              <p className="text-xs text-gray-500 mt-2">
+                ⚠️ Add this URL to your ShegerPay dashboard and select events: <strong>payment.verified</strong> and <strong>payment.failed</strong>
+              </p>
+            </div>
+          </div>
         </div>
       </div>
 

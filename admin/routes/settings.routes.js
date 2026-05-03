@@ -37,7 +37,7 @@ router.post("/", async (req, res) => {
     }
 });
 
-// GET payment methods specifically
+// GET payment methods
 router.get("/payment-methods", async (req, res) => {
     try {
         const result = await db.query("SELECT value FROM settings WHERE key='payment_info'");
@@ -117,6 +117,41 @@ router.put("/banner", async (req, res) => {
     } catch (error) {
         console.error("UPDATE banner error:", error);
         res.status(500).json({ error: "Failed to update banner" });
+    }
+});
+
+// GET webhook secret
+router.get("/webhook-secret", async (req, res) => {
+    try {
+        const result = await db.query("SELECT value FROM settings WHERE key='shegerpay_webhook_secret'");
+        res.json({ secret: result.rows[0]?.value || null });
+    } catch (error) {
+        console.error("GET webhook secret error:", error);
+        res.status(500).json({ error: "Failed to fetch webhook secret" });
+    }
+});
+
+// UPDATE webhook secret
+router.post("/webhook-secret", async (req, res) => {
+    const { secret } = req.body;
+    
+    if (!secret || secret.length < 32) {
+        return res.status(400).json({ error: "Secret must be at least 32 characters" });
+    }
+
+    try {
+        await db.query(
+            `INSERT INTO settings (key, value)
+             VALUES ('shegerpay_webhook_secret', $1)
+             ON CONFLICT (key)
+             DO UPDATE SET value = $1`,
+            [secret]
+        );
+
+        res.json({ success: true, message: "Webhook secret updated" });
+    } catch (error) {
+        console.error("UPDATE webhook secret error:", error);
+        res.status(500).json({ error: "Failed to update webhook secret" });
     }
 });
 

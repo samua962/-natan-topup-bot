@@ -1629,7 +1629,7 @@ bot.on("text", async (ctx) => {
     const state = userState[userId];
 
     // Handle transaction ID input for deposit or payment
-   if (state && state.step === "AWAITING_TX_ID") {
+if (state && state.step === "AWAITING_TX_ID") {
     const txId = ctx.message.text.trim();
     if (!txId) {
         await ctx.reply("❌ Please enter a valid transaction ID.");
@@ -1640,12 +1640,28 @@ bot.on("text", async (ctx) => {
 
     if (state.depositPending) {
         // ----- DEPOSIT FLOW -----
-        const existing = await db.query(
+        
+        // Check if webhook already processed this deposit
+        const existingApproved = await db.query(
             "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
             [txId]
         );
-        if (existing.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous deposit.");
+        if (existingApproved.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                "✅ This transaction was already verified! Your wallet has been updated.");
+            delete userState[userId];
+            return;
+        }
+
+        // Check for duplicate pending
+        const existingPending = await db.query(
+            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'PENDING'",
+            [txId]
+        );
+        if (existingPending.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                "⚠️ This transaction ID is already pending review. Our team will process it shortly.");
+            delete userState[userId];
             return;
         }
 
@@ -1663,6 +1679,9 @@ bot.on("text", async (ctx) => {
         };
         const provider = providerMap[method.name.trim().toLowerCase()] || "telebirr";
         const expectedRecipient = method.account_number;
+
+        // Store transaction ID first (so webhook can find it)
+        userState[userId].tempTxId = txId;
 
         const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
 
@@ -1694,7 +1713,32 @@ bot.on("text", async (ctx) => {
         return;
     } 
     else if (state.orderPending) {
-        // ----- PRODUCT ORDER FLOW (Bank Transfer) -----
+        // ----- PRODUCT ORDER FLOW -----
+        
+        // Check if webhook already processed this order
+        const existingApprovedOrder = await db.query(
+            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
+            [txId]
+        );
+        if (existingApprovedOrder.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                "✅ This transaction was already verified! Your order has been processed.");
+            delete userState[userId];
+            return;
+        }
+
+        // Check for duplicate pending
+        const existingPendingOrder = await db.query(
+            "SELECT id FROM orders WHERE transaction_id = $1 AND status = 'PENDING'",
+            [txId]
+        );
+        if (existingPendingOrder.rows.length > 0) {
+            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                "⚠️ This transaction ID is already pending review. Our team will process it shortly.");
+            delete userState[userId];
+            return;
+        }
+
         const orderId = state.orderId;
         const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
         if (!order) {
@@ -1703,24 +1747,8 @@ bot.on("text", async (ctx) => {
             return;
         }
 
-        const existingOrder = await db.query(
-            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
-            [txId]
-        );
-        if (existingOrder.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ This transaction ID has already been used for a previous order.");
-            return;
-        }
-
-        // Get the payment method used for this order
-        const methods = await getPaymentMethods();
-        const paymentMethodName = state.paymentMethodName || "Bank Transfer";
-        const selectedMethod = methods.find(m => m.name.toLowerCase() === paymentMethodName.toLowerCase());
-        if (!selectedMethod) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Payment method not found. Please contact support.");
-            delete userState[userId];
-            return;
-        }
+        // Store transaction ID
+        await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
 
         const providerMap = {
             "telebirr": "telebirr",
@@ -1732,12 +1760,15 @@ bot.on("text", async (ctx) => {
             "ebirr": "ebirr_kaafi",
             "e-birr": "ebirr_kaafi"
         };
-        const provider = providerMap[selectedMethod.name.trim().toLowerCase()] || "telebirr";
-        const expectedRecipient = selectedMethod.account_number;
-        const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod.account_name, expectedRecipient);
+        const provider = providerMap[state.paymentMethodName?.toLowerCase()] || "telebirr";
+        const methods = await getPaymentMethods();
+        const selectedMethod = methods.find(m => m.name.toLowerCase() === state.paymentMethodName?.toLowerCase());
+        const expectedRecipient = selectedMethod?.account_number || null;
+
+        const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod?.account_name, expectedRecipient);
 
         if (verification.verified) {
-            await db.query(`UPDATE orders SET verified_by_shegerpay = true, transaction_id = $1 WHERE id = $2`, [txId, orderId]);
+            await db.query(`UPDATE orders SET verified_by_shegerpay = true WHERE id = $1`, [orderId]);
             if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
                 const ragnerResult = await createOrder(order.external_product_id, order.player_id);
                 if (ragnerResult && ragnerResult.success) {
@@ -1755,10 +1786,10 @@ bot.on("text", async (ctx) => {
                 await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                 await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.");
                 let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
-                if (order.player_id) adminMsg += `🎮 Player ID: ${order.player_id}\n`;
                 if (order.user_inputs) {
                     const inputs = parseUserInputs(order.user_inputs);
                     if (inputs) {
+                        if (inputs.player_id) adminMsg += `🎮 Player ID: ${inputs.player_id}\n`;
                         if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
                         if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
                         if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
@@ -1771,12 +1802,12 @@ bot.on("text", async (ctx) => {
                 });
             }
         } else {
-            await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
+            // Manual fallback
             let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
             if (order.user_inputs) {
                 const inputs = parseUserInputs(order.user_inputs);
                 if (inputs) {
-                    if (inputs.email) caption += `📧 Email: ${inputs.email}\n`;
+                    if (inputs.email) caption += `\n📧 Email: ${inputs.email}\n`;
                     if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
                     if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
                     if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
