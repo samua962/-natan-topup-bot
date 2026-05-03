@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
+const bot = require("../bot/bot");
 
 const categoryRoutes = require("./routes/category.routes");
 const productRoutes = require("./routes/product.routes");
@@ -9,9 +10,12 @@ const settingsRoutes = require("./routes/settings.routes");
 const authRoutes = require("./routes/auth.routes");
 const usersRoutes = require("./routes/users.routes");
 const giveawayRoutes = require("./routes/giveaway.routes");
-const webhookRoutes = require("./routes/webhook.routes");
+const { router: webhookRoutes, setBotInstance } = require("./routes/webhook.routes");
 
 const app = express();
+
+// Set bot instance for webhook
+setBotInstance(bot);
 
 app.use(cors());
 
@@ -63,6 +67,6 @@ app.use("/api/users", authMiddleware, usersRoutes);
 app.use("/api/giveaway", authMiddleware, giveawayRoutes);
 
 // Need bot instance for webhook
-const bot = require("../bot/bot");
+// const bot = require("../bot/bot");
 
 module.exports = app;
