@@ -17,7 +17,9 @@ function verifyWebhookSignature(body, signatureHeader, secret) {
     if (!provided) return false;
 
     const normalizedSecret = typeof secret === "string" ? secret.trim() : secret;
-    const expected = crypto.createHmac("sha256", normalizedSecret).update(body, "utf8").digest();
+
+    // Try UTF-8 encoding first (most common)
+    const expectedUtf8 = crypto.createHmac("sha256", normalizedSecret).update(body, "utf8").digest();
 
     let providedBuffer;
     if (/^[0-9a-f]{64}$/i.test(provided)) {
@@ -25,14 +27,30 @@ function verifyWebhookSignature(body, signatureHeader, secret) {
     } else if (/^[A-Za-z0-9+/=]+$/.test(provided)) {
         providedBuffer = Buffer.from(provided, "base64");
     } else {
+        console.error("❌ Invalid signature format:", provided.substring(0, 20) + "...");
         return false;
     }
 
-    if (providedBuffer.length !== expected.length) {
+    if (providedBuffer.length !== expectedUtf8.length) {
+        console.error("❌ Signature length mismatch:", providedBuffer.length, "vs", expectedUtf8.length);
         return false;
     }
 
-    return crypto.timingSafeEqual(expected, providedBuffer);
+    // Try UTF-8 first
+    if (crypto.timingSafeEqual(expectedUtf8, providedBuffer)) {
+        return true;
+    }
+
+    // If UTF-8 fails, try binary encoding (less common but possible)
+    const expectedBinary = crypto.createHmac("sha256", normalizedSecret).update(Buffer.from(body, "utf8")).digest();
+    if (crypto.timingSafeEqual(expectedBinary, providedBuffer)) {
+        console.log("✅ Signature verified with binary encoding");
+        return true;
+    }
+
+    console.error("❌ Signature mismatch. Expected (UTF-8):", expectedUtf8.toString("hex").substring(0, 20) + "...");
+    console.error("❌ Signature mismatch. Provided:", provided.substring(0, 20) + "...");
+    return false;
 }
 
 // Helper: get pending deposit by transaction ID
@@ -108,12 +126,17 @@ router.post("/shegerpay", async (req, res) => {
     console.log("📨 ShegerPay webhook received:", {
         event,
         signature: signature ? "present" : "missing",
+        signatureRaw: signature ? signature.substring(0, 50) + "..." : "none",
         rawBodyPresent: Boolean(rawBody),
+        rawBodyLength: rawBody ? rawBody.length : 0,
+        rawBodyPreview: rawBody ? rawBody.substring(0, 100) + "..." : "none"
     });
     
     // Get webhook secret from database
     const secretResult = await db.query("SELECT value FROM settings WHERE key='shegerpay_webhook_secret'");
     const secret = secretResult.rows[0]?.value;
+    
+    console.log("🔐 Webhook secret retrieved:", secret ? "present" : "missing", secret ? `(length: ${secret.length})` : "");
     
     // Verify signature (if secret exists)
     if (secret && signature) {
