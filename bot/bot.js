@@ -39,15 +39,17 @@ function getTxIdHint(methodName) {
     }
 }
 
+// Replace the existing resolveShegerPayProvider function with this:
 function resolveShegerPayProvider(methodName) {
     const name = methodName?.toString().trim().toLowerCase() || "";
     if (!name) return null;
-    if (name.includes("telebirr")) return "telebirr";
+    if (name.includes("telebirr") || name.includes("tele-birr") || name.includes("tele birr")) return "telebirr";
     if (name.includes("cbe")) return "cbe";
     if (name.includes("awash")) return "awash";
     if (name.includes("dashen")) return "dashen";
     if (name.includes("abyssinia") || name.includes("boa")) return "boa";
     if (name.includes("ebirr") || name.includes("e-birr")) return "ebirr_kaafi";
+    if (name.includes("mpesa") || name.includes("m-pesa")) return "mpesa";
     return null;
 }
 

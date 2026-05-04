@@ -35,7 +35,10 @@ async function getWebhookSecret() {
 // 🟢 HELPER: VERIFY WEBHOOK SIGNATURE
 // =====================
 function verifyWebhookSignature(body, signatureHeader, secret) {
-    if (!signatureHeader || !secret) return false;
+    if (!signatureHeader || !secret) {
+        console.log("❌ Missing signature or secret");
+        return false;
+    }
     
     // ShegerPay sends: sha256=<hmac_hex_digest>
     const provided = signatureHeader.replace('sha256=', '').trim();
@@ -50,6 +53,14 @@ function verifyWebhookSignature(body, signatureHeader, secret) {
         .createHmac('sha256', secret)
         .update(body, 'utf8')
         .digest('hex');
+    
+    // Debug logging (remove in production)
+    console.log("🔐 Signature verification debug:");
+    console.log("   Body length:", body.length);
+    console.log("   Body preview:", body.substring(0, 100) + "...");
+    console.log("   Expected:", expected);
+    console.log("   Provided:", provided);
+    console.log("   Match:", expected === provided);
     
     // Use timing-safe comparison
     try {

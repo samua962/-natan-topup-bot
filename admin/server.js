@@ -16,24 +16,30 @@ const app = express();
 app.use(cors());
 
 // IMPORTANT: ShegerPay webhook needs RAW body for signature verification
-// This must come BEFORE express.json()
-app.use("/webhook/shegerpay", express.raw({ type: "application/json" }), (req, res, next) => {
-    if (Buffer.isBuffer(req.body)) {
-        req.rawBody = req.body.toString("utf8");
-    } else if (typeof req.body === "string") {
-        req.rawBody = req.body;
-    } else {
-        req.rawBody = JSON.stringify(req.body);
-    }
-
-    try {
-        req.body = JSON.parse(req.rawBody);
-    } catch (error) {
-        console.error("Failed to parse ShegerPay webhook raw body:", error.message);
-        return res.status(400).send("Invalid JSON");
-    }
-
-    next();
+// This middleware captures the raw body BEFORE any JSON parsing
+app.use("/webhook/shegerpay", (req, res, next) => {
+    let rawData = '';
+    
+    req.on('data', (chunk) => {
+        rawData += chunk.toString();
+    });
+    
+    req.on('end', () => {
+        // Store the raw body as a string (exactly as received)
+        req.rawBody = rawData;
+        
+        // Parse JSON for route handler convenience
+        if (rawData) {
+            try {
+                req.body = JSON.parse(rawData);
+            } catch (error) {
+                console.error("❌ Failed to parse webhook JSON:", error.message);
+                return res.status(400).json({ error: "Invalid JSON" });
+            }
+        }
+        
+        next();
+    });
 });
 
 // Regular JSON middleware for other routes
