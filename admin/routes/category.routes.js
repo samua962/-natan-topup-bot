@@ -71,7 +71,7 @@ router.put("/:id", async (req, res) => {
             `UPDATE categories 
              SET display_name = $1, 
                  icon = $2, 
-                 image_url = $3, 
+                 image_url = $3,
                  position = $4, 
                  is_active = $5 
              WHERE id = $6
@@ -117,7 +117,7 @@ router.get("/:id/subcategories", async (req, res) => {
 
 // CREATE subcategory
 router.post("/subcategories", async (req, res) => {
-    const { category_id, name, display_name, position, is_active } = req.body;
+    const { category_id, name, display_name, image_url, position, is_active } = req.body;
 
     if (!category_id || !name || !display_name) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -125,10 +125,10 @@ router.post("/subcategories", async (req, res) => {
 
     try {
         const result = await db.query(
-            `INSERT INTO subcategories (category_id, name, display_name, position, is_active)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO subcategories (category_id, name, display_name, image_url, position, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING *`,
-            [category_id, name, display_name, position || 0, is_active !== false]
+            [category_id, name, display_name, image_url || null, position || 0, is_active !== false]
         );
 
         res.json(result.rows[0]);
@@ -140,16 +140,16 @@ router.post("/subcategories", async (req, res) => {
 
 // UPDATE subcategory
 router.put("/subcategories/:id", async (req, res) => {
-    const { display_name, position, is_active } = req.body;
+    const { display_name, image_url, position, is_active } = req.body;
 
     try {
         const activeStatus = is_active !== undefined ? is_active : true;
         
         await db.query(
             `UPDATE subcategories 
-             SET display_name = $1, position = $2, is_active = $3 
-             WHERE id = $4`,
-            [display_name, position || 0, activeStatus, req.params.id]
+             SET display_name = $1, image_url = $2, position = $3, is_active = $4 
+             WHERE id = $5`,
+            [display_name, image_url || null, position || 0, activeStatus, req.params.id]
         );
 
         res.json({ success: true });

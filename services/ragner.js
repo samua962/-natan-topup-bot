@@ -9,12 +9,42 @@ const headers = {
 
 const GENERIC_PRODUCT_ID = 1;
 
+// Cache for valid product ID
+let cachedProductId = null;
+let cacheExpiry = 0;
+
+async function getValidProductId() {
+    // Return cached ID if still valid
+    if (cachedProductId && Date.now() < cacheExpiry) {
+        return cachedProductId;
+    }
+
+    try {
+        const res = await axios.get(
+            `${BASE_URL}/products?game=PUBG`,
+            { headers, timeout: 10000 }
+        );
+        
+        if (res.data?.data && res.data.data.length > 0) {
+            cachedProductId = res.data.data[0].id;
+            cacheExpiry = Date.now() + (5 * 60 * 1000); // Cache for 5 minutes
+            return cachedProductId;
+        }
+    } catch (err) {
+        console.error("Error fetching product ID:", err.message);
+    }
+    
+    // Fallback to generic ID if fetch fails
+    return GENERIC_PRODUCT_ID;
+}
+
 async function validatePlayerOnly(playerId) {
     try {
+        const productId = await getValidProductId();
         const res = await axios.post(
             `${BASE_URL}/validate-player`,
             {
-                product_id: GENERIC_PRODUCT_ID,
+                product_id: productId,
                 player_id: playerId
             },
             { headers, timeout: 10000 }

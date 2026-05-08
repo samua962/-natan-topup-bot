@@ -71,42 +71,28 @@ export default function Settings() {
   }, []);
 
   // Generate random secret
-function generateRandomSecret() {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_';
-    let secret = '';
-    for (let i = 0; i < 32; i++) {
-        secret += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
+  function generateRandomSecret() {
+    const secret = [...Array(32)].map(() => Math.random().toString(36)[2]).join('');
+    setGeneratedSecret(secret);
     setWebhookSecret(secret);
-    // Don't set generatedSecret separately anymore
-    setGeneratedSecret('');
-}
+  }
 
-  // In your Settings.js, update the saveWebhookSecret function:
-async function saveWebhookSecret() {
-    let secretToSave = webhookSecret;
-    
-    // Strip whsec_ prefix if present (ShegerPay format)
-    if (secretToSave.startsWith('whsec_')) {
-        secretToSave = secretToSave.substring(6);
+  // Save webhook secret
+  async function saveWebhookSecret() {
+    if (!webhookSecret || webhookSecret.length < 32) {
+      alert("Secret must be at least 32 characters");
+      return;
     }
-    
-    if (!secretToSave || secretToSave.length < 32) {
-        alert("Secret must be at least 32 characters (excluding whsec_ prefix)");
-        return;
-    }
-    
     setSavingWebhook(true);
     try {
-        await API.post("/settings/webhook-secret", { secret: secretToSave });
-        setWebhookSecret(secretToSave); // Update display to show without prefix
-        alert("Webhook secret saved!");
+      await API.post("/settings/webhook-secret", { secret: webhookSecret });
+      alert("Webhook secret saved!");
     } catch (error) {
-        console.error("Save webhook secret error:", error);
-        alert("Failed to save webhook secret");
+      console.error("Save webhook secret error:", error);
+      alert("Failed to save webhook secret");
     }
     setSavingWebhook(false);
-}
+  }
 
   // Deposit amounts functions
   async function saveDepositAmounts() {

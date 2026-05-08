@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import API from "../api/api";
-import { Plus, Edit, Trash2, Power, FolderPlus, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Edit, Trash2, Power, FolderPlus, ChevronDown, ChevronUp, Image } from "lucide-react";
 
 export default function Categories() {
   const [categories, setCategories] = useState([]);
@@ -15,7 +15,7 @@ export default function Categories() {
     name: "", 
     display_name: "", 
     icon: "", 
-    image_url: "", 
+    image_url: "",
     position: 0,
     is_active: true 
   });
@@ -23,7 +23,8 @@ export default function Categories() {
   const [subForm, setSubForm] = useState({ 
     category_id: "", 
     name: "", 
-    display_name: "", 
+    display_name: "",
+    image_url: "",
     position: 0,
     is_active: true 
   });
@@ -130,7 +131,7 @@ export default function Categories() {
         alert("Subcategory added!");
       }
       setShowSubModal(false);
-      setSubForm({ category_id: "", name: "", display_name: "", position: 0, is_active: true });
+      setSubForm({ category_id: "", name: "", display_name: "", image_url: "", position: 0, is_active: true });
       setEditingSub(null);
       loadData();
     } catch (error) {
@@ -153,6 +154,7 @@ export default function Categories() {
     try {
       await API.put(`/categories/subcategories/${sub.id}`, { 
         display_name: sub.display_name,
+        image_url: sub.image_url,
         position: sub.position,
         is_active: !sub.is_active 
       });
@@ -166,6 +168,7 @@ export default function Categories() {
     try {
       await API.put(`/categories/subcategories/${sub.id}`, { 
         display_name: sub.display_name,
+        image_url: sub.image_url,
         position: sub.position,
         is_active: sub.is_active,
         [field]: value 
@@ -183,6 +186,7 @@ export default function Categories() {
       display_name: cat.display_name,
       icon: cat.icon || "",
       image_url: cat.image_url || "",
+
       position: cat.position || 0,
       is_active: cat.is_active
     });
@@ -195,6 +199,8 @@ export default function Categories() {
       category_id: catId,
       name: sub.name,
       display_name: sub.display_name,
+      image_url: sub.image_url || "",
+
       position: sub.position || 0,
       is_active: sub.is_active
     });
@@ -208,7 +214,7 @@ export default function Categories() {
         <div>
           <h2 className="text-xl md:text-2xl font-bold text-gray-800">Categories</h2>
           <p className="text-sm text-gray-500">Manage product categories and subcategories</p>
-          <p className="text-xs text-gray-400 mt-1">Each category can have its own image for the bot</p>
+          <p className="text-xs text-gray-400 mt-1">Categories can have custom images</p>
         </div>
         <div className="flex space-x-2">
           <button
@@ -226,7 +232,7 @@ export default function Categories() {
           <button
             onClick={() => {
               setEditingSub(null);
-              setSubForm({ category_id: "", name: "", display_name: "", position: 0, is_active: true });
+              setSubForm({ category_id: "", name: "", display_name: "", image_url: "", position: 0, is_active: true });
               setShowSubModal(true);
             }}
             className="flex items-center px-3 py-2 md:px-4 md:py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm"
@@ -246,7 +252,7 @@ export default function Categories() {
         <div className="space-y-4 md:space-y-6">
           {categories.map((cat) => (
             <div key={cat.id} className={`bg-white rounded-lg md:rounded-xl shadow-sm border ${!cat.is_active ? 'opacity-60' : ''}`}>
-              {/* Category Header - Clickable on mobile */}
+              {/* Category Header */}
               <div 
                 className="p-4 md:p-6 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white rounded-t-lg md:rounded-t-xl cursor-pointer md:cursor-default"
                 onClick={() => toggleCategory(cat.id)}
@@ -298,24 +304,25 @@ export default function Categories() {
                   </div>
                 </div>
                 
-                {/* Category Image URL Field */}
-                <div className="mt-3" onClick={(e) => e.stopPropagation()}>
-                  <label className="text-xs text-gray-500 block mb-1">Category Image URL</label>
-                  <input
-                    type="text"
-                    value={cat.image_url || ""}
-                    onChange={(e) => updateCategoryField(cat, "image_url", e.target.value)}
-                    placeholder="https://example.com/category-image.jpg"
-                    className="w-full px-3 py-1 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-yellow-500"
-                  />
-                  {cat.image_url && (
-                    <img src={cat.image_url} alt={cat.display_name} className="mt-2 h-20 w-full object-cover rounded-lg" />
-                  )}
-                  <p className="text-xs text-gray-400 mt-1">Shown when users click this category</p>
+                {/* Category Image URL & Emoji ID Fields */}
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3" onClick={(e) => e.stopPropagation()}>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Category Image URL</label>
+                    <input
+                      type="text"
+                      value={cat.image_url || ""}
+                      onChange={(e) => updateCategoryField(cat, "image_url", e.target.value)}
+                      placeholder="https://example.com/category-image.jpg"
+                      className="w-full px-3 py-1 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-yellow-500"
+                    />
+                    {cat.image_url && (
+                      <img src={cat.image_url} alt={cat.display_name} className="mt-2 h-20 w-full object-cover rounded-lg" />
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Subcategories - Expandable on mobile */}
+              {/* Subcategories */}
               <div className={`${expandedCategories[cat.id] ? 'block' : 'hidden md:block'}`}>
                 <div className="overflow-x-auto">
                   {/* Mobile Subcategory Cards */}
@@ -334,7 +341,10 @@ export default function Categories() {
                               {sub.is_active ? "Active" : "Inactive"}
                             </button>
                           </div>
-                          <div className="text-xs text-gray-500 mb-2">Slug: {sub.name}</div>
+                          <div className="text-xs text-gray-500 mb-1">Slug: {sub.name}</div>
+                          {sub.image_url && (
+                            <img src={sub.image_url} alt="" className="h-16 w-full object-cover rounded mb-2" />
+                          )}
                           <div className="flex justify-end space-x-2">
                             <button onClick={() => openEditSubcategory(sub, cat.id)} className="p-1 text-blue-500">
                               <Edit size={14} />
@@ -357,21 +367,22 @@ export default function Categories() {
                     <table className="w-full">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Display Name</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Position</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Display Name</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Position</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
                         {cat.subcategories && cat.subcategories.length > 0 ? (
                           cat.subcategories.map((sub) => (
                             <tr key={sub.id} className="hover:bg-gray-50">
-                              <td className="px-6 py-4 text-sm text-gray-600">{sub.id}</td>
-                              <td className="px-6 py-4 text-sm text-gray-800">{sub.name}</td>
-                              <td className="px-6 py-4">
+                              <td className="px-4 py-3 text-sm text-gray-600">{sub.id}</td>
+                              <td className="px-4 py-3 text-sm text-gray-800">{sub.name}</td>
+                              <td className="px-4 py-3">
                                 <input
                                   type="text"
                                   value={sub.display_name}
@@ -379,15 +390,29 @@ export default function Categories() {
                                   className="w-full px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
                                 />
                               </td>
-                              <td className="px-6 py-4">
+                              <td className="px-4 py-3">
+                                <div className="flex items-center space-x-2">
+                                  <input
+                                    type="text"
+                                    value={sub.image_url || ""}
+                                    onChange={(e) => updateSubcategoryField(sub, "image_url", e.target.value)}
+                                    placeholder="Image URL"
+                                    className="w-32 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-xs"
+                                  />
+                                  {sub.image_url && (
+                                    <Image size={14} className="text-green-500" />
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
                                 <input
                                   type="number"
                                   value={sub.position || 0}
                                   onChange={(e) => updateSubcategoryField(sub, "position", parseInt(e.target.value))}
-                                  className="w-20 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
+                                  className="w-16 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
                                 />
                               </td>
-                              <td className="px-6 py-4">
+                              <td className="px-4 py-3">
                                 <button
                                   onClick={() => toggleSubcategoryActive(sub)}
                                   className={`flex items-center px-2 py-1 rounded-lg text-xs ${
@@ -398,7 +423,7 @@ export default function Categories() {
                                   {sub.is_active ? "Active" : "Inactive"}
                                 </button>
                               </td>
-                              <td className="px-6 py-4">
+                              <td className="px-4 py-3">
                                 <div className="flex space-x-2">
                                   <button onClick={() => openEditSubcategory(sub, cat.id)} className="p-1 text-blue-500">
                                     <Edit size={16} />
@@ -412,7 +437,7 @@ export default function Categories() {
                           ))
                         ) : (
                           <tr>
-                            <td colSpan="6" className="px-6 py-8 text-center text-gray-500">
+                            <td colSpan="8" className="px-6 py-8 text-center text-gray-500">
                               No subcategories yet. Click "Add Subcategory" to create one.
                             </td>
                           </tr>
@@ -427,7 +452,7 @@ export default function Categories() {
         </div>
       )}
 
-      {/* Category Modal - Mobile responsive */}
+      {/* Category Modal */}
       {showCatModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
@@ -514,7 +539,7 @@ export default function Categories() {
       {/* Subcategory Modal */}
       {showSubModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-md w-full">
+          <div className="bg-white rounded-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
             <div className="p-4 md:p-6 border-b border-gray-100">
               <h3 className="text-lg md:text-xl font-bold text-gray-800">
                 {editingSub ? "Edit Subcategory" : "Add Subcategory"}
@@ -553,6 +578,19 @@ export default function Categories() {
                   placeholder="Instant Delivery, Manual, Diamonds"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Image URL (optional)</label>
+                <input
+                  type="text"
+                  value={subForm.image_url}
+                  onChange={(e) => setSubForm({ ...subForm, image_url: e.target.value })}
+                  placeholder="https://example.com/subcategory-image.jpg"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
+                />
+                {subForm.image_url && (
+                  <img src={subForm.image_url} alt="Preview" className="mt-2 h-20 w-full object-cover rounded-lg" />
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Position</label>

@@ -9,7 +9,6 @@ export default function Products() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [subcategories, setSubcategories] = useState([]);
-  const [ragnerProducts, setRagnerProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -34,15 +33,13 @@ export default function Products() {
   async function loadData() {
     setLoading(true);
     try {
-      const [productsRes, categoriesRes, ragnerRes] = await Promise.all([
+      const [productsRes, categoriesRes] = await Promise.all([
         API.get("/products"),
-        API.get("/categories/with-subs"),
-        API.get("/products/ragner/products").catch(() => ({ data: [] }))
+        API.get("/categories/with-subs")
       ]);
       
       setProducts(productsRes.data);
       setCategories(categoriesRes.data);
-      setRagnerProducts(ragnerRes.data);
     } catch (error) {
       console.error("Load error:", error);
       alert("Failed to load data");
@@ -99,15 +96,6 @@ export default function Products() {
     setFormData({
       ...formData,
       [name]: type === "checkbox" ? checked : value
-    });
-  }
-
-  function handleRequiresFieldsChange(e) {
-    const value = e.target.value;
-    const fields = value.split(',').map(f => f.trim()).filter(f => f);
-    setFormData({
-      ...formData,
-      requires_fields: fields
     });
   }
 
@@ -273,7 +261,7 @@ export default function Products() {
         </div>
       </div>
 
-      {/* Stats Summary - Mobile Friendly */}
+      {/* Stats Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <div className="bg-white rounded-lg p-3 md:p-4 text-center border border-gray-100">
           <p className="text-xl md:text-2xl font-bold text-gray-800">{products.length}</p>
@@ -293,14 +281,14 @@ export default function Products() {
         </div>
       </div>
 
-      {/* Mobile Card View */}
+      {/* Loading */}
       {loading ? (
         <div className="flex justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-yellow-500"></div>
         </div>
       ) : (
         <>
-          {/* Mobile Cards - visible on small screens */}
+          {/* Mobile Cards */}
           <div className="space-y-3 md:hidden">
             {paginatedProducts.map((p) => {
               const typeBadge = getProductTypeBadge(p.product_type);
@@ -315,7 +303,7 @@ export default function Products() {
                     </div>
                     <span className="font-bold text-yellow-600 text-sm">{p.price_etb} ETB</span>
                   </div>
-                  <div className="text-xs text-gray-500 mb-3">Category: {p.category_name || "-"}</div>
+                  <div className="text-xs text-gray-500 mb-1">Category: {p.category_name || "-"}</div>
                   <div className="flex justify-between items-center">
                     <button
                       onClick={() => toggleActive(p)}
@@ -340,18 +328,18 @@ export default function Products() {
             })}
           </div>
 
-          {/* Desktop Table - hidden on mobile */}
+          {/* Desktop Table */}
           <div className="hidden md:block overflow-x-auto bg-white rounded-xl shadow-sm border border-gray-100">
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -359,16 +347,16 @@ export default function Products() {
                   const typeBadge = getProductTypeBadge(p.product_type);
                   return (
                     <tr key={p.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 text-sm font-medium text-gray-900">#{p.id}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900">#{p.id}</td>
+                      <td className="px-4 py-3">
                         <span className={`inline-flex px-2 py-1 text-xs rounded-full ${typeBadge.bg}`}>
                           {typeBadge.text}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-800">{p.name}</td>
-                      <td className="px-6 py-4 text-sm font-medium text-gray-900">{p.price_etb} ETB</td>
-                      <td className="px-6 py-4 text-sm text-gray-600">{p.category_name || "-"}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-3 text-sm text-gray-800">{p.name}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900">{p.price_etb} ETB</td>
+                      <td className="px-4 py-3 text-sm text-gray-600">{p.category_name || "-"}</td>
+                      <td className="px-4 py-3">
                         <button
                           onClick={() => toggleActive(p)}
                           className={`flex items-center px-2 py-1 rounded-lg text-xs ${
@@ -379,7 +367,7 @@ export default function Products() {
                           {p.is_active ? "Active" : "Inactive"}
                         </button>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-3">
                         <div className="flex space-x-2">
                           <button onClick={() => openEditModal(p)} className="p-1 text-blue-500 hover:text-blue-700">
                             <Edit size={18} />
@@ -424,7 +412,7 @@ export default function Products() {
         </>
       )}
 
-      {/* Modal - remains same */}
+      {/* Product Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
@@ -448,7 +436,6 @@ export default function Products() {
                   <option value="subscription">👑 Subscription (PUBG)</option>
                   <option value="free_fire">🔥 Free Fire Diamonds</option>
                   <option value="tiktok">📱 TikTok Coins</option>
-                  <option value="telegram">✍️ Telegram Premium</option>
                 </select>
               </div>
 

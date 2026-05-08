@@ -3,7 +3,7 @@ const { Telegraf } = require("telegraf");
 const db = require("../database/db");
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const axios = require("axios");
-const { createOrder, validatePlayer } = require("../services/ragner");
+const { createOrder, validatePlayer, validatePlayerOnly } = require("../services/ragner");
 const FormData = require("form-data");
 
 const userState = {};
@@ -22,8 +22,9 @@ function parseUserInputs(input) {
             return null;
         }
     }
-    return input; // already an object (JSONB)
+    return input;
 }
+
 function getTxIdHint(methodName) {
     const name = methodName?.toString().trim().toLowerCase() || "";
     if (name.includes("telebirr")) {
@@ -39,7 +40,6 @@ function getTxIdHint(methodName) {
     }
 }
 
-// Replace the existing resolveShegerPayProvider function with this:
 function resolveShegerPayProvider(methodName) {
     const name = methodName?.toString().trim().toLowerCase() || "";
     if (!name) return null;
@@ -71,7 +71,6 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
     const apiKey = process.env.SHEGERPAY_API_KEY;
     if (!apiKey) return { verified: false, error: "API key missing" };
 
-    // Retry once on timeout
     const maxRetries = 1;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
@@ -93,7 +92,7 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                         "Content-Type": "application/json",
                         "X-API-Key": apiKey,
                     },
-                    timeout: 30000, // 30 seconds
+                    timeout: 30000,
                 }
             );
             const data = response.data;
@@ -104,7 +103,6 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 return { verified: false, error: data.message || "Verification failed", details: data };
             }
 
-            // 1. Amount validation (tolerance: up to +10 ETB, never below)
             let paidAmount = data.settled_amount != null ? parseFloat(data.settled_amount) : parseFloat(data.amount);
             if (isNaN(paidAmount)) {
                 return { verified: false, error: "Could not retrieve transaction amount", details: data };
@@ -116,7 +114,6 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 return { verified: false, error: `Amount too high: expected around ${expectedAmount} ETB, got ${paidAmount} ETB (max +10 ETB allowed)`, details: data };
             }
 
-            // 2. Timestamp validation (within last 30 minutes)
             if (data.timestamp) {
                 const txTime = parseShegerTimestamp(data.timestamp);
                 const now = new Date();
@@ -124,11 +121,8 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 if (diffMinutes > 30) {
                     return { verified: false, error: `Transaction is too old (${Math.round(diffMinutes)} minutes). Please use a recent payment.`, details: data };
                 }
-            } else {
-                console.warn("No timestamp field in ShegerPay response – skipping time check.");
             }
 
-            // 3. Recipient account validation (last 4 digits)
             if (expectedRecipientAccount) {
                 const fullMerchantAccount = String(expectedRecipientAccount).replace(/\s/g, "");
                 const maskedAccount = data.credited_party_account;
@@ -138,8 +132,6 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                     if (merchantLast4 !== maskedLast4) {
                         return { verified: false, error: `Payment was sent to account ending with ${maskedLast4}, but our account ends with ${merchantLast4}. Please check the account number.`, details: data };
                     }
-                } else {
-                    console.warn("No credited_party_account field – skipping payee check.");
                 }
             }
 
@@ -153,7 +145,6 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
             if (attempt === maxRetries) {
                 return { verified: false, error: err.message };
             }
-            // Wait 2 seconds before retry
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
@@ -348,23 +339,31 @@ async function safeEdit(ctx, text, buttons) {
         if (ctx.callbackQuery && ctx.callbackQuery.message) {
             if (ctx.callbackQuery.message.photo) {
                 return ctx.editMessageCaption(text, {
+                    parse_mode: "HTML",
                     reply_markup: { inline_keyboard: buttons },
                 });
             } else {
                 return ctx.editMessageText(text, {
+                    parse_mode: "HTML",
                     reply_markup: { inline_keyboard: buttons },
                 });
             }
         } else {
             return ctx.reply(text, {
+                parse_mode: "HTML",
                 reply_markup: { inline_keyboard: buttons },
             });
         }
     } catch (error) {
         console.error("SafeEdit error:", error.message);
-        return ctx.reply(text, {
-            reply_markup: { inline_keyboard: buttons },
-        });
+        // Fallback without HTML if it fails
+        try {
+            return ctx.reply(text.replace(/<[^>]*>/g, ''), {
+                reply_markup: { inline_keyboard: buttons },
+            });
+        } catch (e2) {
+            console.error("SafeEdit fallback error:", e2.message);
+        }
     }
 }
 
@@ -379,7 +378,7 @@ async function safeEditMedia(ctx, imageUrl, caption, buttons) {
                     type: "photo",
                     media: imageUrl,
                     caption: caption,
-                    parse_mode: "Markdown",
+                    parse_mode: "HTML",
                 },
                 {
                     reply_markup: { inline_keyboard: buttons },
@@ -388,7 +387,7 @@ async function safeEditMedia(ctx, imageUrl, caption, buttons) {
         } else {
             await ctx.replyWithPhoto(imageUrl, {
                 caption: caption,
-                parse_mode: "Markdown",
+                parse_mode: "HTML",
                 reply_markup: { inline_keyboard: buttons },
             });
         }
@@ -396,25 +395,31 @@ async function safeEditMedia(ctx, imageUrl, caption, buttons) {
         console.error("SafeEditMedia error:", error.message);
         await ctx.replyWithPhoto(imageUrl, {
             caption: caption,
-            parse_mode: "Markdown",
+            parse_mode: "HTML",
             reply_markup: { inline_keyboard: buttons },
         });
     }
 }
 
 // =====================
-// 🟢 BUTTON BUILDER
+// 🟢 BUTTON BUILDER - ALWAYS VERTICAL
 // =====================
-function buildButtons(items, singleColumn = false) {
+function buildButtons(items, singleColumn = true) {
     const rows = [];
-    if (singleColumn) {
-        for (let i = 0; i < items.length; i++) {
-            rows.push([items[i]]);
-        }
-    } else {
-        for (let i = 0; i < items.length; i += 2) {
-            rows.push(items.slice(i, i + 2));
-        }
+    // Default to single column (vertical layout)
+    for (let i = 0; i < items.length; i++) {
+        rows.push([items[i]]);
+    }
+    return rows;
+}
+
+// =====================
+// 🟢 BUILD BUTTONS HORIZONTAL (for main menu only)
+// =====================
+function buildButtonsHorizontal(items) {
+    const rows = [];
+    for (let i = 0; i < items.length; i += 2) {
+        rows.push(items.slice(i, i + 2));
     }
     return rows;
 }
@@ -454,7 +459,7 @@ function clearHistory(userId) {
 }
 
 // =====================
-// 🟢 SHOW RAGNER PRODUCTS
+// 🟢 SHOW RAGNER PRODUCTS (UC up to 3850)
 // =====================
 async function showRagnerProducts(ctx) {
     try {
@@ -469,7 +474,7 @@ async function showRagnerProducts(ctx) {
             const uc = ucMatch ? parseInt(ucMatch[0]) : 0;
             const excludeKeywords = ["card", "web", "prime", "plus", "weekly", "deal", "pack", "bundle", "chest", "crate"];
             const isExcluded = excludeKeywords.some((kw) => name.includes(kw));
-            return !isExcluded && uc >= 60 && uc <= 1800;
+            return !isExcluded && uc >= 60 && uc <= 3850;
         });
         products.sort((a, b) => {
             const ucA = parseInt(a.name.match(/\d+/) || 0);
@@ -493,8 +498,9 @@ async function showRagnerProducts(ctx) {
         }
         const buttons = buildButtons(productButtons);
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+       
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-        await safeEdit(ctx, "⚡ PUBG UC Instant Delivery\n\nMax: 1800 UC\n\nSelect UC amount:", buttons);
+        await safeEdit(ctx, "⚡ PUBG UC Instant Delivery\n\nMax: 3850 UC\n\nSelect UC amount:", buttons);
     } catch (error) {
         console.error("Ragner products error:", error);
         await safeEdit(ctx, "⏳ Service busy. Please try again.", [[{ text: "🔙 Back", callback_data: "back" }]]);
@@ -506,67 +512,52 @@ async function showRagnerProducts(ctx) {
 // =====================
 async function showDatabaseProducts(ctx, subId) {
     try {
+        // Get subcategory info FIRST
+        const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
+        const subcategory = subResult.rows[0];
+        
         const result = await db.query(
             `SELECT * FROM products WHERE subcategory_id = $1 AND is_active = true ORDER BY position ASC, id ASC`,
             [subId]
         );
         if (result.rows.length === 0) {
-            await safeEdit(ctx, "📭 No products available right now.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+            await safeEdit(ctx, "📭 No products available right now.", [
+                [{ text: "🔙 Back", callback_data: "back" }],
+                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+            ]);
             return;
         }
         const productType = result.rows[0]?.product_type;
-        const useSingleColumn = productType === "grospack" || productType === "subscription";
         const buttons = buildButtons(
             result.rows.map((p) => ({
                 text: `${p.name} - ${p.price_etb} ETB`,
                 callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
             })),
-            useSingleColumn
+            true
         );
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+        buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        
         let title = "📦 Select Product:";
         if (productType === "grospack") title = "🎁 Grospack Options:";
         if (productType === "subscription") title = "👑 Subscription Plans:";
         if (productType === "free_fire") title = "🔥 Free Fire Diamonds:";
         if (productType === "tiktok") title = "📱 TikTok Coins:";
-        if (productType === "telegram") title = "✍️ Telegram Premium:";
-        await safeEdit(ctx, title, buttons);
+        if (productType === "uc_manual") title = "📦 PUBG UC Manual:";
+        
+        // Use subcategory image if available, otherwise fallback to category image
+        let displayImage = subcategory?.image_url;
+        if (!displayImage && subcategory?.category_id) {
+            const catResult = await db.query("SELECT image_url FROM categories WHERE id = $1", [subcategory.category_id]);
+            displayImage = catResult.rows[0]?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+        }
+        
+        // Show ONE message with subcategory image and products
+        await safeEditMedia(ctx, displayImage, title, buttons);
+        
     } catch (error) {
         console.error("Database products error:", error);
-        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
-    }
-}
-
-// =====================
-// 🟢 SHOW PRODUCTS BY CATEGORY
-// =====================
-async function showProductsByCategory(ctx, categoryId) {
-    try {
-        const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
-        const category = categoryResult.rows[0];
-        const result = await db.query(
-            `SELECT * FROM products WHERE category_id = $1 AND is_active = true ORDER BY position ASC, id ASC`,
-            [categoryId]
-        );
-        if (result.rows.length === 0) {
-            await safeEdit(ctx, "📭 No products available right now.", [[{ text: "🔙 Back", callback_data: "back" }]]);
-            return;
-        }
-        const buttons = buildButtons(
-            result.rows.map((p) => ({
-                text: `${p.name} - ${p.price_etb} ETB`,
-                callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
-            }))
-        );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-        let title = "📦 Select Product:";
-        if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
-        const categoryImage = category?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-        await safeEditMedia(ctx, categoryImage, title, buttons);
-    } catch (error) {
-        console.error("Products by category error:", error);
         await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
     }
 }
@@ -579,8 +570,11 @@ async function showCategories(ctx) {
         const categories = await db.query(
             "SELECT * FROM categories WHERE is_active=true AND name NOT IN ('channel', 'information', 'info') ORDER BY position"
         );
-        const buttons = buildButtons(
-            categories.rows.map((c) => ({ text: c.display_name, callback_data: `cat_${c.id}` }))
+        const buttons = buildButtonsHorizontal(
+            categories.rows.map((c) => ({ 
+                text: `${c.icon || "📂"} ${c.display_name}`, 
+                callback_data: `cat_${c.id}` 
+            }))
         );
         buttons.push([
             { text: "📋 My Orders", callback_data: "myorders_back" },
@@ -606,26 +600,6 @@ async function showCategories(ctx) {
 }
 
 // =====================
-// 🟢 SHOW GAMES
-// =====================
-async function showGames(ctx) {
-    try {
-        const games = await db.query(
-            "SELECT * FROM categories WHERE is_active=true AND name IN ('pubg', 'free_fire') ORDER BY position"
-        );
-        const buttons = buildButtons(
-            games.rows.map((g) => ({ text: g.display_name, callback_data: `cat_${g.id}` }))
-        );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-        await safeEdit(ctx, "🎮 Select Game:", buttons);
-    } catch (error) {
-        console.error("Show games error:", error);
-        await safeEdit(ctx, "⚠️ Error loading games.", []);
-    }
-}
-
-// =====================
 // 🟢 SHOW WALLET
 // =====================
 async function showWallet(ctx) {
@@ -637,7 +611,8 @@ async function showWallet(ctx) {
         [{ text: "🔙 Back", callback_data: "back" }],
         [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
     ];
-    await safeEdit(ctx, `👛 MY WALLET\n\n💰 Balance: ${balance} ETB\n\nSelect an option below:`, buttons);
+    const emojiText = "👛 MY WALLET";
+    await safeEdit(ctx, `${emojiText}\n\n💰 Balance: ${balance} ETB\n\nSelect an option below:`, buttons);
 }
 
 // =====================
@@ -708,43 +683,53 @@ async function showWarningMessage(ctx, product) {
         "Do you understand and wish to continue?";
     const buttons = [
         [{ text: "✅ I Understand, Continue", callback_data: `continue_${product.id}` }],
-        [{ text: "❌ Cancel", callback_data: "confirm_no" }],
+        [{ text: "❌ Cancel", callback_data: "cancel_order" }],
     ];
-    await ctx.reply(warning, { parse_mode: "Markdown", reply_markup: { inline_keyboard: buttons } });
+    await ctx.reply(warning, { parse_mode: "HTML", reply_markup: { inline_keyboard: buttons } });
 }
 
 // =====================
-// 🟢 ASK FOR FIELDS (Player ID, Email, etc.)
+// 🟢 ASK FOR FIELDS (Player ID, Email, etc.) - WITH PLAYER VALIDATION FOR ALL PUBG
 // =====================
 async function askForFields(ctx, product) {
     const state = userState[ctx.from.id];
     const productType = product.product_type;
-    if (!state.requiredFields || state.requiredFields.length === 0) {
-        if (productType === "free_fire" || productType === "uc_manual" || productType === "grospack" || productType === "subscription") {
-            state.requiredFields = ["player_id"];
-        } else if (productType === "tiktok") {
-            state.requiredFields = ["email", "phone", "password"];
-        } else if (productType === "telegram") {
-            state.requiredFields = ["username", "phone"];
-        } else if (productType === "uc_instant") {
-            state.requiredFields = ["player_id"];
-        } else {
-            state.requiredFields = ["player_id"];
-        }
+    
+    // PUBG product types that need player validation
+    const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
+    
+    if (pubgTypes.includes(productType)) {
+        state.requiredFields = ["player_id"];
+    } else if (productType === "tiktok") {
+        state.requiredFields = ["email", "phone", "password"];
+    } else if (productType === "telegram") {
+        state.requiredFields = ["username", "phone"];
+    } else {
+        state.requiredFields = ["player_id"];
     }
+    
     state.currentField = 0;
     state.collectedData = {};
     state.step = "PLAYER";
+    
+    state.product = {
+        productId: product.id,
+        price: product.price_etb,
+        name: product.name,
+        type: product.product_type === "uc_instant" ? "ragner" : "database",
+        product_type: productType,
+        fullProduct: product
+    };
+    
     const firstField = state.requiredFields[0];
     const prompts = {
-        email: "📧 Enter TikTok Email:",
-        phone: "📱 Enter Phone Number:",
-        password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure",
-        username: "👤 Enter Telegram Username:\n\nExample: @username",
-        player_id: "🎮 Enter Player ID:\n\nExample: 123456789",
+        email: "📧 Enter TikTok Email:\n\nType /cancel to cancel",
+        phone: "📱 Enter Phone Number:\n\nType /cancel to cancel",
+        password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure\nType /cancel to cancel",
+        username: "👤 Enter Telegram Username:\n\nExample: @username\nType /cancel to cancel",
+        player_id: "🎮 Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
     };
-    const message = prompts[firstField] || `Enter ${firstField}:`;
-    await ctx.reply(message);
+    await ctx.reply(prompts[firstField] || `Enter ${firstField}:`);
 }
 
 // =====================
@@ -758,11 +743,11 @@ async function processFieldInput(ctx, product, state, input) {
     if (state.currentField < fields.length) {
         const nextField = fields[state.currentField];
         const prompts = {
-            email: "📧 Enter TikTok Email:",
-            phone: "📱 Enter Phone Number:",
-            password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure",
-            username: "👤 Enter Telegram Username:\n\nExample: @username",
-            player_id: "🎮 Enter Player ID:\n\nExample: 51807260252",
+            email: "📧 Enter TikTok Email:\n\nType /cancel to cancel",
+            phone: "📱 Enter Phone Number:\n\nType /cancel to cancel",
+            password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure\nType /cancel to cancel",
+            username: "👤 Enter Telegram Username:\n\nExample: @username\nType /cancel to cancel",
+            player_id: "🎮 Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
         };
         return ctx.reply(prompts[nextField] || `Enter ${nextField}:`);
     }
@@ -777,7 +762,13 @@ async function processFieldInput(ctx, product, state, input) {
     confirmMessage += `Is this correct?`;
     state.step = "CONFIRM";
     await ctx.reply(confirmMessage, {
-        reply_markup: { inline_keyboard: [[{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }]] },
+        parse_mode: "HTML",
+        reply_markup: { 
+            inline_keyboard: [
+                [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
+                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+            ] 
+        },
     });
 }
 
@@ -789,6 +780,7 @@ async function showPaymentOptions(ctx, productInfo) {
     const buttons = [
         [{ text: "👛 Pay from Wallet", callback_data: `pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` }],
         [{ text: "💳 Bank Transfer", callback_data: `pay_bank_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` }],
+        [{ text: "❌ Cancel Order", callback_data: "cancel_order" }],
         [{ text: "🔙 Back", callback_data: "back" }],
         [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
     ];
@@ -815,6 +807,7 @@ async function showBankTransferMethods(ctx, productInfo) {
     const buttons = methods.map((m) => [
         { text: m.name, callback_data: `payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
     ]);
+    buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
     buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
     buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
 
@@ -839,23 +832,16 @@ ${paymentMethod.instructions || ""}
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ LEGAL WARNING:
 By paying, you confirm you are 18+ and agree to our Terms.
-ክፍያ ሲፈጽሙ ዕድሜዎ 18+ መሆኑን እና በደንቡ መስማማትዎን ያረጋግጣሉ።
 
 🔹 INSTRUCTIONS:
 1️⃣ Copy account & verify name.
 2️⃣ Send EXACTLY ${productInfo.price} ETB only.
-3️⃣ After payment, copy the Transaction ID from your bank app or SMS (see image above).
+3️⃣ After payment, copy the Transaction ID from your bank app or SMS.
 4️⃣ Send payment screenshot here.
 5️⃣ Then paste the Transaction ID.
 
-🔹 አማርኛ መመሪያ:
-1️⃣ አካውንቱን ኮፒ አድርገው ስሙን ያረጋግጡ።
-2️⃣ ትክክለኛውን ${productInfo.price} ብር ብቻ ይላኩ።
-3️⃣ ክፍያ ከፈጸሙ በኋላ የትራንዛክሽን መለያ (Transaction ID) ይቅዱ (ከላይ ባለው ምስል ይመልከቱ)።
-4️⃣ ስክሪንሾቱን እዚህ ይላኩ።
-5️⃣ ከዚያ የትራንዛክሽን መለያውን ይላኩ።
-
 ⏳ Order expires in 30 minutes.
+Type /cancel to cancel.
     `;
 
     const userId = ctx.from.id;
@@ -864,13 +850,13 @@ By paying, you confirm you are 18+ and agree to our Terms.
     userState[userId].productInfo = productInfo;
     userState[userId].step = "PAY";
 
-    // If payment method has an image, send it with the short caption; otherwise send the caption as text
     if (paymentMethod.image_url && paymentMethod.image_url.trim() !== "") {
-        await ctx.replyWithPhoto(paymentMethod.image_url, { caption: shortCaption });
+        await ctx.replyWithPhoto(paymentMethod.image_url, { caption: shortCaption, parse_mode: "HTML" });
     } else {
-        await ctx.reply(shortCaption);
+        await ctx.reply(shortCaption, { parse_mode: "HTML" });
     }
 }
+
 // =====================
 // 🟢 PROCESS WALLET PAYMENT
 // =====================
@@ -887,40 +873,39 @@ async function processWalletPayment(ctx, productInfo) {
     }
     const isInstant = productInfo.type === "ragner" || productInfo.product_type === "uc_instant";
     if (isInstant) {
-    // First create the order (PENDING temporarily)
-    const orderRes = await db.query(
-        `INSERT INTO orders 
-        (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id)
-        VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7)
-        RETURNING id`,
-        [userId, ctx.from.username || null, productInfo.name, productInfo.price, "ragner", productInfo.productId, productInfo.playerId]
-    );
-    const orderId = orderRes.rows[0].id;
-
-    // Deduct from wallet (only after order created)
-    await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Purchase: ${productInfo.name}`);
-
-    // Call Ragner to deliver
-    const deliveryResult = await createOrder(productInfo.productId, productInfo.playerId);
-    if (deliveryResult && deliveryResult.success) {
-        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-        await safeEdit(ctx, `✅ PAYMENT SUCCESSFUL!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🎮 Order #${orderId} completed! UC delivered.`, []);
-        await ctx.telegram.sendMessage(
-            process.env.ADMIN_ID,
-            `🟢 WALLET PURCHASE (AUTO-COMPLETED & DELIVERED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n✅ Auto-completed from wallet balance, UC delivered.`
+        const orderRes = await db.query(
+            `INSERT INTO orders 
+            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id)
+            VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7)
+            RETURNING id`,
+            [userId, ctx.from.username || null, productInfo.name, productInfo.price, "ragner", productInfo.productId, productInfo.playerId]
         );
+        const orderId = orderRes.rows[0].id;
+
+        await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Purchase: ${productInfo.name}`);
+
+        const deliveryResult = await createOrder(productInfo.productId, productInfo.playerId);
+        if (deliveryResult && deliveryResult.success) {
+            await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+            await safeEdit(ctx, `✅ PAYMENT SUCCESSFUL!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🎮 Order #${orderId} completed! UC delivered.`, []);
+            await ctx.telegram.sendMessage(
+                process.env.ADMIN_ID,
+                `🟢 WALLET PURCHASE (AUTO-COMPLETED & DELIVERED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n✅ Auto-completed from wallet balance, UC delivered.`
+            );
+            // Return to main menu after success
+            setTimeout(() => showMainMenu(ctx), 2000);
+        } else {
+            await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending manual delivery.\n\nYou will be notified when completed.`, []);
+            await ctx.telegram.sendMessage(
+                process.env.ADMIN_ID,
+                `🟡 WALLET PURCHASE (PENDING MANUAL DELIVERY)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ Auto-delivery failed. Please complete manually.`,
+                { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
+            );
+            setTimeout(() => showMainMenu(ctx), 3000);
+        }
+        return true;
     } else {
-        // Delivery failed – mark as APPROVED, admin must complete manually
-        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-        await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending manual delivery.\n\nYou will be notified when completed.`, []);
-        await ctx.telegram.sendMessage(
-            process.env.ADMIN_ID,
-            `🟡 WALLET PURCHASE (PENDING MANUAL DELIVERY)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ Auto-delivery failed. Please complete manually.`,
-            { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
-        );
-    }
-    return true;
-}else {
         const result = await db.query(
             `INSERT INTO orders 
             (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, player_id, player_name, user_inputs)
@@ -933,6 +918,7 @@ async function processWalletPayment(ctx, productInfo) {
         const orderId = result.rows[0].id;
         await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Purchase: ${productInfo.name} (Pending Approval)`);
         await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending admin approval.\n\nYou will be notified when approved.`, []);
+        
         let adminMessage = `🟡 WALLET PURCHASE (PENDING APPROVAL)\n\n━━━━━━━━━━━━━━━━━━━━\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n💳 Payment Method: Wallet Balance\n\n`;
         if (productInfo.playerId) adminMessage += `🎮 Player ID: ${productInfo.playerId}\n`;
         if (productInfo.playerName) adminMessage += `👤 Player Name: ${productInfo.playerName}\n`;
@@ -947,6 +933,8 @@ async function processWalletPayment(ctx, productInfo) {
         await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMessage, {
             reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }]] },
         });
+        // Return to main menu after success
+        setTimeout(() => showMainMenu(ctx), 3000);
         return true;
     }
 }
@@ -959,8 +947,8 @@ async function showMainMenu(ctx) {
         const categories = await db.query(
             "SELECT * FROM categories WHERE is_active=true AND name NOT IN ('channel', 'information', 'info') ORDER BY position"
         );
-        const buttons = buildButtons(
-            categories.rows.map((c) => ({ text: c.display_name, callback_data: `cat_${c.id}` }))
+        const buttons = buildButtonsHorizontal(
+            categories.rows.map((c) => ({ text: `${c.icon || "📂"} ${c.display_name}`, callback_data: `cat_${c.id}` }))
         );
         buttons.push([
             { text: "📋 My Orders", callback_data: "myorders_back" },
@@ -979,17 +967,21 @@ async function showMainMenu(ctx) {
         ]);
         const mainMenuBanner = await getMainMenuBanner();
         const caption = `🎮 Natan Top Up\n\n⚡ Fast • Secure • Reliable\n\nSelect a service below 👇`;
+        
         if (ctx.callbackQuery && ctx.callbackQuery.message) {
             await safeEditMedia(ctx, mainMenuBanner, caption, buttons);
         } else {
-            await ctx.replyWithPhoto(mainMenuBanner, { caption: caption, reply_markup: { inline_keyboard: buttons } });
+            await ctx.replyWithPhoto(mainMenuBanner, { 
+                caption: caption, 
+                parse_mode: "HTML", 
+                reply_markup: { inline_keyboard: buttons } 
+            });
         }
     } catch (error) {
         console.error("Show main menu error:", error);
         await ctx.reply("⚠️ System error. Please try /start again.");
     }
 }
-
 // =====================
 // 🟢 GIVEAWAY HELPERS
 // =====================
@@ -1007,7 +999,7 @@ function generateTicketNumber() {
 async function handleGiveawayTicket(ctx) {
     const roundId = await getCurrentRoundId();
     if (!roundId) {
-        await ctx.reply("🎁 No active giveaway at the moment. Please wait for the next round!");
+        await ctx.reply("🎁 No active giveaway at the moment. Please wait for the next round!", { parse_mode: "HTML" });
         return;
     }
 
@@ -1018,7 +1010,7 @@ async function handleGiveawayTicket(ctx) {
         [userId, roundId]
     );
     if (existing.rows.length > 0) {
-        await ctx.reply(`🎟️ You already have a ticket! Your number is **${existing.rows[0].ticket_number}**. Good luck!`);
+        await ctx.reply(`🎟️ You already have a ticket! Your number is <b>${existing.rows[0].ticket_number}</b>. Good luck!`, { parse_mode: "HTML" });
         return;
     }
 
@@ -1028,7 +1020,7 @@ async function handleGiveawayTicket(ctx) {
     );
     const totalTickets = parseInt(countResult.rows[0].count);
     if (totalTickets >= 1000) {
-        await ctx.reply("😞 Sorry, all tickets for this giveaway have been claimed. Wait for the next round!");
+        await ctx.reply("😞 Sorry, all tickets for this giveaway have been claimed. Wait for the next round!", { parse_mode: "HTML" });
         return;
     }
 
@@ -1058,7 +1050,7 @@ async function handleGiveawayTicket(ctx) {
             }
         }
         if (!unique) {
-            await ctx.reply("❌ Error: All ticket numbers are taken. Please contact support.");
+            await ctx.reply("❌ Error: All ticket numbers are taken. Please contact support.", { parse_mode: "HTML" });
             return;
         }
     }
@@ -1075,7 +1067,8 @@ async function handleGiveawayTicket(ctx) {
         [userId, ctx.from.username || null]
     );
 
-    await ctx.reply(`🎟️ Your lucky ticket number is **${ticketNum}**!\n\nYou have been entered into the giveaway. Good luck!`);
+    const emojiText = "🎟️";
+    await ctx.reply(`${emojiText} Your lucky ticket number is <b>${ticketNum}</b>!\n\nYou have been entered into the giveaway. Good luck!`, { parse_mode: "HTML" });
 }
 
 // =====================
@@ -1091,8 +1084,8 @@ function formatDate(date) {
 }
 async function sendNewTextMessage(ctx, text, inlineKeyboard) {
     const replyMarkup = inlineKeyboard ? { inline_keyboard: inlineKeyboard } : undefined;
-    if (ctx.callbackQuery && ctx.callbackQuery.message) await ctx.reply(text, { reply_markup: replyMarkup });
-    else await ctx.reply(text, { reply_markup: replyMarkup });
+    if (ctx.callbackQuery && ctx.callbackQuery.message) await ctx.reply(text, { parse_mode: "HTML", reply_markup: replyMarkup });
+    else await ctx.reply(text, { parse_mode: "HTML", reply_markup: replyMarkup });
 }
 async function showMyOrders(ctx) {
     const userId = ctx.from.id;
@@ -1105,7 +1098,8 @@ async function showMyOrders(ctx) {
             await safeEdit(ctx, "📭 No orders found.", [[{ text: "🛒 Start Shopping", callback_data: "main_menu" }]]);
             return;
         }
-        let message = "📋 YOUR ORDERS\n\n";
+        const emojiText = "📋 YOUR ORDERS";
+        let message = `${emojiText}\n\n`;
         for (let i = 0; i < orders.rows.length; i++) {
             const o = orders.rows[i];
             const emoji = getStatusEmoji(o.status);
@@ -1127,7 +1121,7 @@ async function showOrderDetail(ctx, orderId) {
     const userId = ctx.from.id;
     try {
         const order = await db.query(`SELECT * FROM orders WHERE id = $1 AND telegram_id = $2`, [orderId, userId]);
-        if (order.rows.length === 0) return ctx.reply("❌ Order not found.");
+        if (order.rows.length === 0) return ctx.reply("❌ Order not found.", { parse_mode: "HTML" });
         const o = order.rows[0];
         const emoji = getStatusEmoji(o.status);
         let message = `${emoji} ORDER #${o.id} DETAILS\n\n📦 Product: ${o.product_name}\n💰 Amount: ${o.price_etb} ETB\n📊 Status: ${o.status}\n📅 Date: ${formatDate(o.created_at)}\n`;
@@ -1150,10 +1144,10 @@ async function showOrderDetail(ctx, orderId) {
         else if (o.status === "REJECTED") statusMsg = "\n❌ Order rejected.";
         message += statusMsg;
         const buttons = [[{ text: "🔙 Back to My Orders", callback_data: "myorders_back" }]];
-        await ctx.editMessageText(message, { reply_markup: { inline_keyboard: buttons } });
+        await ctx.editMessageText(message, { parse_mode: "HTML", reply_markup: { inline_keyboard: buttons } });
     } catch (error) {
         console.error("Order detail error:", error);
-        await ctx.reply("⚠️ Error loading order details.");
+        await ctx.reply("⚠️ Error loading order details.", { parse_mode: "HTML" });
     }
 }
 
@@ -1161,7 +1155,8 @@ async function showOrderDetail(ctx, orderId) {
 // 🟢 SUPPORT
 // =====================
 async function showSupport(ctx) {
-    const message = `📞 CONTACT SUPPORT\n\nHaving issues? Need help?\n\n📱 Telegram: ${process.env.ADMIN_USERNAME || "Contact Admin"}\n✉️ Response Time: Usually within 1 hour\n\nSend us a message below!`;
+    const emojiText = "📞 CONTACT SUPPORT";
+    const message = `${emojiText}\n\nHaving issues? Need help?\n\n📱 Telegram: ${process.env.ADMIN_USERNAME || "Contact Admin"}\n✉️ Response Time: Usually within 1 hour\n\nSend us a message below!`;
     const buttons = [
         [{ text: "📩 Message Admin", url: `https://t.me/${process.env.ADMIN_USERNAME?.replace("@", "") || "natan_topup"}` }],
         [{ text: "🔙 Back", callback_data: "back" }],
@@ -1184,10 +1179,17 @@ bot.start(async (ctx) => {
 });
 bot.command("myorders", async (ctx) => { await showMyOrders(ctx); });
 bot.command("support", async (ctx) => { await showSupport(ctx); });
+bot.command("cancel", async (ctx) => {
+    delete userState[ctx.from.id];
+    clearHistory(ctx.from.id);
+    await ctx.reply("❌ Order Cancelled.", { parse_mode: "HTML" });
+    await showMainMenu(ctx);
+});
 bot.command("channel", async (ctx) => {
     const channelUsername = process.env.CHANNEL_USERNAME || "natan_topup";
     const channelLink = `https://t.me/${channelUsername.replace("@", "")}`;
-    const message = `📢 OUR OFFICIAL CHANNEL\n\nJoin for updates, offers, and giveaways!\n\nClick below to join.`;
+    const emojiText = "📢 OUR OFFICIAL CHANNEL";
+    const message = `${emojiText}\n\nJoin for updates, offers, and giveaways!\n\nClick below to join.`;
     const buttons = [
         [{ text: "📢 Join Our Channel", url: channelLink }],
         [{ text: "🔙 Back", callback_data: "back" }],
@@ -1196,7 +1198,8 @@ bot.command("channel", async (ctx) => {
     await safeEdit(ctx, message, buttons);
 });
 bot.command("info", async (ctx) => {
-    const message = `ℹ️ ABOUT NATAN TOP UP\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n✍️ Telegram Premium\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
+    const emojiText = "ℹ️ ABOUT NATAN TOP UP";
+    const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
     const buttons = [
         [{ text: "🔙 Back", callback_data: "back" }],
         [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
@@ -1204,7 +1207,8 @@ bot.command("info", async (ctx) => {
     await safeEdit(ctx, message, buttons);
 });
 bot.command("help", async (ctx) => {
-    const message = `❓ HELP & GUIDE\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+    const emojiText = "❓ HELP & GUIDE";
+    const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
     const buttons = [
         [{ text: "🔙 Back", callback_data: "back" }],
         [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
@@ -1217,6 +1221,52 @@ bot.command("debug", async (ctx) => {
     await ctx.reply(`User State:\n${JSON.stringify(state, null, 2)}`);
 });
 
+
+
+// =====================
+// 🟢 SHOW PRODUCTS BY CATEGORY (for categories without subcategories)
+// =====================
+async function showProductsByCategory(ctx, categoryId) {
+    try {
+        const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
+        const category = categoryResult.rows[0];
+        
+        const result = await db.query(
+            `SELECT * FROM products WHERE category_id = $1 AND is_active = true ORDER BY position ASC, id ASC`,
+            [categoryId]
+        );
+        
+        if (result.rows.length === 0) {
+            await safeEdit(ctx, "📭 No products available right now.", [
+                [{ text: "🔙 Back", callback_data: "back" }],
+                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+            ]);
+            return;
+        }
+        
+        const buttons = buildButtons(
+            result.rows.map((p) => ({
+                text: `${p.name} - ${p.price_etb} ETB`,
+                callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
+            })),
+            true
+        );
+        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+        buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
+        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        
+        let title = "📦 Select Product:";
+        if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
+        
+        const categoryImage = category?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+        
+        await safeEditMedia(ctx, categoryImage, title, buttons);
+    } catch (error) {
+        console.error("Products by category error:", error);
+        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+    }
+}
+
 // =====================
 // 🟢 CALLBACK QUERY
 // =====================
@@ -1228,35 +1278,88 @@ bot.on("callback_query", async (ctx) => {
     const state = userState[userId];
     await ctx.answerCbQuery();
 
+    // ----- CANCEL ORDER -----
+    if (data === "cancel_order") {
+        delete userState[userId];
+        clearHistory(userId);
+        try {
+            await ctx.editMessageText("❌ Order Cancelled.", { parse_mode: "HTML" });
+        } catch (e) {
+            await ctx.reply("❌ Order Cancelled.", { parse_mode: "HTML" });
+        }
+        return showMainMenu(ctx);
+    }
+
     // ----- MAIN MENU -----
     if (data === "main_menu") {
         delete userState[userId];
         clearHistory(userId);
         return showMainMenu(ctx);
     }
-    // ----- BACK BUTTON -----
-    if (data === "back") {
-        const prev = getPreviousScreen(userId);
-        if (prev) {
-            popHistory(userId);
-            if (prev.screen === "categories") return showCategories(ctx);
-            if (prev.screen === "wallet") return showWallet(ctx);
-            if (prev.screen === "deposit_amounts") return showDepositAmounts(ctx);
-            if (prev.screen === "myorders") return showMyOrders(ctx);
-            if (prev.screen === "support") return showSupport(ctx);
-            if (prev.screen === "games") return showGames(ctx);
-            if (prev.screen === "main_menu") return showMainMenu(ctx);
-            return showMainMenu(ctx);
+    
+   // ----- BACK BUTTON -----
+if (data === "back") {
+    const prev = getPreviousScreen(userId);
+    if (prev) {
+        popHistory(userId);
+        
+        // Navigate to the specific previous screen
+        if (prev.screen === "categories") {
+            return showCategories(ctx);
         }
+        if (prev.screen === "products") {
+            // Go back to subcategory products list
+            if (prev.data?.subId) {
+                return showDatabaseProducts(ctx, prev.data.subId);
+            }
+        }
+        if (prev.screen === "subcategories") {
+            // Go back to subcategories list for a category
+            if (prev.data?.categoryId) {
+                const categoryResult = await db.query(
+                    "SELECT * FROM categories WHERE id = $1 AND is_active = true", 
+                    [prev.data.categoryId]
+                );
+                const category = categoryResult.rows[0];
+                if (category) {
+                    const subs = await db.query(
+                        "SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", 
+                        [prev.data.categoryId]
+                    );
+                    const buttons = buildButtons(
+                        subs.rows.map((s) => ({ 
+                            text: s.display_name, 
+                            callback_data: `sub_${s.id}_${s.name}` 
+                        }))
+                    );
+                    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+                    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+                    
+                    const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+                    const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
+                    
+                    return safeEditMedia(ctx, categoryImage, caption, buttons);
+                }
+            }
+        }
+        if (prev.screen === "wallet") return showWallet(ctx);
+        if (prev.screen === "deposit_amounts") return showDepositAmounts(ctx);
+        if (prev.screen === "myorders") return showMyOrders(ctx);
+        if (prev.screen === "support") return showSupport(ctx);
+        if (prev.screen === "main_menu") return showMainMenu(ctx);
+        
+        // Default fallback
         return showMainMenu(ctx);
     }
+    // No history - go to main menu
+    return showMainMenu(ctx);
+}
 
     // ----- DEPOSIT FLOW -----
     if (data.startsWith("deposit_paymethod_")) {
-        // Clear any previous order state
-delete userState[userId].orderPending;
-delete userState[userId].orderId;
-delete userState[userId].productInfo;
+        delete userState[userId].orderPending;
+        delete userState[userId].orderId;
+        delete userState[userId].productInfo;
         const parts = data.split("_");
         const methodId = parseInt(parts[2]);
         const amount = parseInt(parts[3]);
@@ -1273,8 +1376,8 @@ delete userState[userId].productInfo;
         userState[userId].depositMethod = selectedMethod;
         userState[userId].depositAmount = amount;
         userState[userId].step = "DEPOSIT_PAYMENT_WAITING";
-        const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "Send payment screenshot here after transfer"}\n\n⚠️ Send the screenshot in this chat`;
-        await ctx.reply(details);
+        const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "Send payment screenshot here after transfer"}\n\n⚠️ Send the screenshot in this chat\nType /cancel to cancel`;
+        await ctx.reply(details, { parse_mode: "HTML" });
         return;
     }
     if (data.startsWith("deposit_") && !data.startsWith("deposit_paymethod_")) {
@@ -1319,10 +1422,22 @@ delete userState[userId].productInfo;
     }
     if (data === "show_games" || data === "🎮 Games") {
         pushHistory(userId, "main_menu");
-        return showGames(ctx);
+        const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND name IN ('pubg', 'free_fire') ORDER BY position");
+        const buttons = buildButtonsHorizontal(gameCategories.rows.map((g) => ({ text: g.display_name, callback_data: `cat_${g.id}` })));
+        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        return safeEdit(ctx, "🎮 Select Game:", buttons);
     }
-    if (data === "info_menu") return bot.telegram.sendMessage(ctx.from.id, "/info");
-    if (data === "help_menu") return bot.telegram.sendMessage(ctx.from.id, "/help");
+    if (data === "info_menu") {
+        const emojiText = "ℹ️ ABOUT NATAN TOP UP";
+        const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
+        return ctx.editMessageText(message, { parse_mode: "HTML" });
+    }
+    if (data === "help_menu") {
+        const emojiText = "❓ HELP & GUIDE";
+        const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+        return ctx.editMessageText(message, { parse_mode: "HTML" });
+    }
 
     // ----- ORDER DETAIL -----
     if (data.startsWith("order_detail_")) {
@@ -1330,50 +1445,71 @@ delete userState[userId].productInfo;
         return showOrderDetail(ctx, orderId);
     }
 
-    // ----- CATEGORY SELECTION -----
-    if (data.startsWith("cat_")) {
-        const categoryId = data.split("_")[1];
-        const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
-        const category = categoryResult.rows[0];
-        if (!category) return ctx.reply("❌ Category not found.");
-        const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
-        const buttons = buildButtons(
-            subs.rows.map((s) => ({ text: s.display_name, callback_data: `sub_${s.id}_${s.name}` }))
-        );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-        const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-        const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
-        if (subs.rows.length === 0) return showProductsByCategory(ctx, categoryId);
+  // ----- CATEGORY SELECTION -----
+if (data.startsWith("cat_")) {
+    const categoryId = data.split("_")[1];
+    const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
+    const category = categoryResult.rows[0];
+    if (!category) return ctx.reply("❌ Category not found.");
+    
+    const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
+    const buttons = buildButtons(
+        subs.rows.map((s) => ({ text: s.display_name, callback_data: `sub_${s.id}_${s.name}` }))
+    );
+    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+    
+    const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+    const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
+    
+    if (subs.rows.length === 0) {
+        // No subcategories - show products directly
         pushHistory(userId, "categories");
-        await safeEditMedia(ctx, categoryImage, caption, buttons);
-        return;
+        return showProductsByCategory(ctx, categoryId);
     }
+    
+    // Save history BEFORE showing subcategories
+    pushHistory(userId, "categories");
+    await safeEditMedia(ctx, categoryImage, caption, buttons);
+    return;
+}
 
     // ----- SUBCATEGORY -----
-    if (data.startsWith("sub_")) {
-        const [, subId, name] = data.split("_");
-        pushHistory(userId, "categories");
-        if (name === "instant") {
-            state.mode = "instant";
-            return showRagnerProducts(ctx);
-        } else {
-            state.mode = "database";
-            return showDatabaseProducts(ctx, subId);
-        }
+   // ----- SUBCATEGORY -----
+// ----- SUBCATEGORY -----
+if (data.startsWith("sub_")) {
+    const [, subId, name] = data.split("_");
+    
+    // Get subcategory info
+    const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
+    const subcategory = subResult.rows[0];
+    
+    // Save history with category data for back navigation
+    pushHistory(userId, "subcategories", { 
+        categoryId: subcategory?.category_id 
+    });
+    
+    // SPECIAL: Handle Instant UC
+    if (name === "instant" || name === "uc_instant") {
+        state.mode = "instant";
+        return showRagnerProducts(ctx);
     }
-
-// RAGNER PRODUCT
-if (data.startsWith("ragner_")) {
-    const parts = data.split("_");
-    const id = parts[1];
-    const price = parseFloat(parts[2]);
-    const name = parts.slice(3).join(" ");
-    const productInfo = { productId: id, price, name, type: "ragner", product_type: "uc_instant" };
-    state.product = productInfo;
-    state.step = "PLAYER";
-    return ctx.reply("🎮 Enter Player ID:\n\nExample: 51807260252");
+    
+    // For all other subcategories - show products directly
+    state.mode = "database";
+    return showDatabaseProducts(ctx, subId);
 }
+    // ----- RAGNER PRODUCT -----
+    if (data.startsWith("ragner_")) {
+        const parts = data.split("_");
+        const id = parts[1];
+        const price = parseFloat(parts[2]);
+        const name = parts.slice(3).join(" ");
+        const productInfo = { productId: id, price, name, type: "ragner", product_type: "uc_instant" };
+        state.product = productInfo;
+        state.step = "PLAYER";
+        return ctx.reply("🎮 Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+    }
 
     // ----- DATABASE PRODUCT -----
     if (data.startsWith("db_")) {
@@ -1384,7 +1520,7 @@ if (data.startsWith("ragner_")) {
         const name = parts.slice(4).join(" ");
         const productResult = await db.query("SELECT * FROM products WHERE id = $1", [productId]);
         const product = productResult.rows[0];
-        if (!product) { await ctx.reply("❌ Product not found."); return; }
+        if (!product) { await ctx.reply("❌ Product not found.", { parse_mode: "HTML" }); return; }
         const productInfo = { productId, price, name, fullProduct: product, product_type: productType };
         state.product = productInfo;
         if (productType === "tiktok" && product.warning_message && product.warning_message !== "none") {
@@ -1399,80 +1535,8 @@ if (data.startsWith("ragner_")) {
         if (product) return askForFields(ctx, product);
     }
 
-  // PAY WITH WALLET
-if (data.startsWith("pay_wallet_")) {
-    const productInfo = {
-        productId: state.product.productId,
-        price: state.product.price,
-        name: state.product.name,
-        playerId: state.playerId,
-        playerName: state.playerName,
-        userInputs: state.collectedData,
-        type: state.product.type,
-        product_type: state.product.product_type
-    };
-    await processWalletPayment(ctx, productInfo);
-    return;
-}
-
-    // PAY WITH BANK TRANSFER
-// PAY WITH BANK TRANSFER
-if (data.startsWith("pay_bank_")) {
-    // Clear any previous deposit state
-delete userState[userId].depositPending;
-delete userState[userId].depositAmount;
-delete userState[userId].depositMethod;
-    const parts = data.split("_");
-    const productId = parts[2];
-    const price = parseFloat(parts[3]);
-    const name = parts.slice(4).join(" ");
-    const productInfo = {
-        productId,
-        price,
-        name,
-        type: state.product?.type,
-        product_type: state.product?.product_type,
-        playerId: state.playerId,
-        playerName: state.playerName,
-        userInputs: state.collectedData,
-    };
-    userState[userId].productInfo = productInfo; // store immediately
-    await showBankTransferMethods(ctx, productInfo);
-    return;
-}
-    // ----- PAYMENT METHOD SELECTION (Bank Transfer) -----
-    if (data.startsWith("payment_")) {
-    const parts = data.split("_");
-    const methodId = parseInt(parts[1]);
-    const productId = parts[2];
-    const price = parseFloat(parts[3]);
-    const name = parts.slice(4).join(" ");
-    const methods = await getPaymentMethods();
-    const selectedMethod = methods.find((m) => m.id === methodId);
-    if (!selectedMethod) {
-        await safeEdit(ctx, "❌ Payment method not found.", []);
-        return;
-    }
-    // productInfo should already be in state from previous steps
-    const productInfo = state.productInfo || {
-        productId,
-        price,
-        name,
-        type: state.product?.type,
-        product_type: state.product?.product_type,
-        playerId: state.playerId,
-        playerName: state.playerName,
-        userInputs: state.collectedData,
-    };
-    userState[userId].productInfo = productInfo; // store explicitly
-    await showPaymentDetails(ctx, selectedMethod, productInfo);
-    return;
-}
-
-// CONFIRM YES
-if (data === "confirm_yes") {
-    if (state.product) {
-        state.step = "PAY";
+    // ----- PAY WITH WALLET -----
+    if (data.startsWith("pay_wallet_")) {
         const productInfo = {
             productId: state.product.productId,
             price: state.product.price,
@@ -1480,24 +1544,87 @@ if (data === "confirm_yes") {
             playerId: state.playerId,
             playerName: state.playerName,
             userInputs: state.collectedData,
-            type: state.product.type,                 
-            product_type: state.product.product_type  
+            type: state.product.type,
+            product_type: state.product.product_type
         };
-        return showPaymentOptions(ctx, productInfo);
-    }
-}
-
-    // ----- CANCEL -----
-    if (data === "confirm_no") {
-        delete userState[userId];
-        await ctx.editMessageText("❌ Order cancelled. Type /start to begin again.");
+        await processWalletPayment(ctx, productInfo);
         return;
     }
 
-    // ----- BACK TO MAIN (fallback) -----
-    if (data === "back_main") {
+    // ----- PAY WITH BANK TRANSFER -----
+    if (data.startsWith("pay_bank_")) {
+        delete userState[userId].depositPending;
+        delete userState[userId].depositAmount;
+        delete userState[userId].depositMethod;
+        const parts = data.split("_");
+        const productId = parts[2];
+        const price = parseFloat(parts[3]);
+        const name = parts.slice(4).join(" ");
+        const productInfo = {
+            productId,
+            price,
+            name,
+            type: state.product?.type,
+            product_type: state.product?.product_type,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            userInputs: state.collectedData,
+        };
+        userState[userId].productInfo = productInfo;
+        await showBankTransferMethods(ctx, productInfo);
+        return;
+    }
+    
+    // ----- PAYMENT METHOD SELECTION (Bank Transfer) -----
+    if (data.startsWith("payment_")) {
+        const parts = data.split("_");
+        const methodId = parseInt(parts[1]);
+        const productId = parts[2];
+        const price = parseFloat(parts[3]);
+        const name = parts.slice(4).join(" ");
+        const methods = await getPaymentMethods();
+        const selectedMethod = methods.find((m) => m.id === methodId);
+        if (!selectedMethod) {
+            await safeEdit(ctx, "❌ Payment method not found.", []);
+            return;
+        }
+        const productInfo = state.productInfo || {
+            productId,
+            price,
+            name,
+            type: state.product?.type,
+            product_type: state.product?.product_type,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            userInputs: state.collectedData,
+        };
+        userState[userId].productInfo = productInfo;
+        await showPaymentDetails(ctx, selectedMethod, productInfo);
+        return;
+    }
+
+    // ----- CONFIRM YES -----
+    if (data === "confirm_yes") {
+        if (state.product) {
+            state.step = "PAY";
+            const productInfo = {
+                productId: state.product.productId,
+                price: state.product.price,
+                name: state.product.name,
+                playerId: state.playerId,
+                playerName: state.playerName,
+                userInputs: state.collectedData,
+                type: state.product.type,                 
+                product_type: state.product.product_type  
+            };
+            return showPaymentOptions(ctx, productInfo);
+        }
+    }
+
+    // ----- CONFIRM NO -----
+    if (data === "confirm_no") {
         delete userState[userId];
-        clearHistory(userId);
+        await ctx.editMessageText("❌ Order cancelled. Type /start to begin again.", { parse_mode: "HTML" });
         return showMainMenu(ctx);
     }
 
@@ -1512,7 +1639,7 @@ if (data === "confirm_yes") {
             const depositAmount = parseFloat(deposit.amount);
             await db.query("UPDATE deposit_requests SET status = 'APPROVED', processed_at = CURRENT_TIMESTAMP WHERE id = $1", [depositId]);
             await updateWalletBalance(deposit.telegram_id, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB`);
-            await ctx.telegram.sendMessage(deposit.telegram_id, `✅ DEPOSIT APPROVED!\n\n💰 Amount: ${depositAmount} ETB has been added to your wallet.`);
+            await ctx.telegram.sendMessage(deposit.telegram_id, `✅ DEPOSIT APPROVED!\n\n💰 Amount: ${depositAmount} ETB has been added to your wallet.`, { parse_mode: "HTML" });
             await ctx.editMessageCaption(`✅ Deposit #${depositId} - APPROVED\nAmount: ${depositAmount} ETB\nAdded to user's wallet`);
             processingOrders.delete(`deposit_${depositId}`);
         } catch (error) {
@@ -1530,7 +1657,7 @@ if (data === "confirm_yes") {
             await db.query("UPDATE deposit_requests SET status = 'REJECTED', processed_at = CURRENT_TIMESTAMP WHERE id = $1", [depositId]);
             const deposit = (await db.query("SELECT * FROM deposit_requests WHERE id = $1", [depositId])).rows[0];
             if (deposit) {
-                await ctx.telegram.sendMessage(deposit.telegram_id, `❌ DEPOSIT REJECTED\n\nAmount: ${deposit.amount} ETB\n\nPlease contact support.`);
+                await ctx.telegram.sendMessage(deposit.telegram_id, `❌ DEPOSIT REJECTED\n\nAmount: ${deposit.amount} ETB\n\nPlease contact support.`, { parse_mode: "HTML" });
             }
             await ctx.editMessageCaption(`❌ Deposit #${depositId} - REJECTED`);
         } catch (error) {
@@ -1554,7 +1681,7 @@ if (data === "confirm_yes") {
             if (order.delivery_type === "ragner") {
                 const validation = await validatePlayer(order.external_product_id, order.player_id);
                 if (!validation || !validation.success) {
-                    await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support.");
+                    await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support.", { parse_mode: "HTML" });
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED (Validation Failed)\n❌ Auto-delivery unavailable. Please deliver manually.\n\n👇 Click "Complete" after manual delivery`;
                     const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
@@ -1565,7 +1692,7 @@ if (data === "confirm_yes") {
                 const result = await createOrder(order.external_product_id, order.player_id);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                    await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!");
+                    await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" });
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 UC Delivered Successfully!`;
                     if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
@@ -1574,7 +1701,7 @@ if (data === "confirm_yes") {
                 } else {
                     const errorMsg = result?.error || result?.details?.message || "Unknown error";
                     console.error(`Auto-delivery failed: ${errorMsg}`);
-                    await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.");
+                    await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" });
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED\n❌ Auto-delivery failed: ${errorMsg}\n\n👇 Click "Complete" after manual delivery`;
                     const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
@@ -1583,7 +1710,7 @@ if (data === "confirm_yes") {
                     return;
                 }
             }
-            await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.");
+            await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" });
             processingOrders.delete(orderId);
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: APPROVED\n📦 Manual delivery - click "Complete" after delivering`;
             const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
@@ -1607,7 +1734,7 @@ if (data === "confirm_yes") {
             if (!order) { processingOrders.delete(`complete_${orderId}`); return ctx.editMessageText("❌ Order not found"); }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!");
+            await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" });
             processingOrders.delete(`complete_${orderId}`);
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 Order delivered successfully!`;
             if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
@@ -1628,7 +1755,7 @@ if (data === "confirm_yes") {
             if (!order) return ctx.editMessageText("❌ Order not found");
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support.");
+            await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support.", { parse_mode: "HTML" });
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n❌ STATUS: REJECTED`;
             if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
             else await ctx.editMessageText(msg);
@@ -1648,230 +1775,249 @@ bot.on("text", async (ctx) => {
     const userId = ctx.from.id;
     const state = userState[userId];
 
-    // Handle transaction ID input for deposit or payment
-if (state && state.step === "AWAITING_TX_ID") {
-    const txId = ctx.message.text.trim();
-    if (!txId) {
-        await ctx.reply("❌ Please enter a valid transaction ID.");
-        return;
+    // Handle cancel command
+    if (text.toLowerCase() === "/cancel" || text.toLowerCase() === "cancel") {
+        delete userState[userId];
+        clearHistory(userId);
+        await ctx.reply("❌ Order Cancelled.", { parse_mode: "HTML" });
+        return showMainMenu(ctx);
     }
 
-    const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.");
-
-    if (state.depositPending) {
-        // ----- DEPOSIT FLOW -----
-        
-        // Check if webhook already processed this deposit
-        const existingApproved = await db.query(
-            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-            [txId]
-        );
-        if (existingApproved.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                "✅ This transaction was already verified! Your wallet has been updated.");
-            delete userState[userId];
+    // Handle transaction ID input for deposit or payment
+    if (state && state.step === "AWAITING_TX_ID") {
+        const txId = ctx.message.text.trim();
+        if (!txId) {
+            await ctx.reply("❌ Please enter a valid transaction ID.", { parse_mode: "HTML" });
             return;
         }
 
-        // Check for duplicate pending
-        const existingPending = await db.query(
-            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'PENDING'",
-            [txId]
-        );
-        if (existingPending.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                "⚠️ This transaction ID is already pending review. Our team will process it shortly.");
-            delete userState[userId];
-            return;
-        }
+        const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.", { parse_mode: "HTML" });
 
-        const depositAmount = state.depositAmount;
-        const method = state.depositMethod;
-        const provider = resolveShegerPayProvider(method?.name) || "telebirr";
-        const expectedRecipient = method?.account_number || null;
-
-        // Store transaction ID first (so webhook can find it)
-        userState[userId].tempTxId = txId;
-
-        const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
-
-        if (verification.verified) {
-            const result = await db.query(
-                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-                 VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
-                [userId, depositAmount, method.name, state.tempFileId, txId]
+        if (state.depositPending) {
+            const existingApproved = await db.query(
+                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
+                [txId]
             );
-            const depositId = result.rows[0].id;
-            await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`);
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
-            delete userState[userId];
-        } else {
-            const result = await db.query(
-                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-                 VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
-                [userId, depositAmount, method.name, state.tempFileId, txId]
+            if (existingApproved.rows.length > 0) {
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                    "✅ This transaction was already verified! Your wallet has been updated.", { parse_mode: "HTML" });
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 2000);
+                return;
+            }
+
+            const existingPending = await db.query(
+                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'PENDING'",
+                [txId]
             );
-            const depositId = result.rows[0].id;
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.");
-            await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
-                reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
-            });
-            delete userState[userId];
-        }
-        return;
-    } 
-    else if (state.orderPending) {
-        // ----- PRODUCT ORDER FLOW -----
-        
-        // Check if webhook already processed this order
-        const existingApprovedOrder = await db.query(
-            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
-            [txId]
-        );
-        if (existingApprovedOrder.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                "✅ This transaction was already verified! Your order has been processed.");
-            delete userState[userId];
+            if (existingPending.rows.length > 0) {
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                    "⚠️ This transaction ID is already pending review. Our team will process it shortly.", { parse_mode: "HTML" });
+                delete userState[userId];
+                return;
+            }
+
+            const depositAmount = state.depositAmount;
+            const method = state.depositMethod;
+            const provider = resolveShegerPayProvider(method?.name) || "telebirr";
+            const expectedRecipient = method?.account_number || null;
+
+            userState[userId].tempTxId = txId;
+
+            const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
+
+            if (verification.verified) {
+                const result = await db.query(
+                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
+                     VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
+                    [userId, depositAmount, method.name, state.tempFileId, txId]
+                );
+                const depositId = result.rows[0].id;
+                await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`, { parse_mode: "HTML" });
+                await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 2000);
+            } else {
+                const result = await db.query(
+                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
+                     VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
+                    [userId, depositAmount, method.name, state.tempFileId, txId]
+                );
+                const depositId = result.rows[0].id;
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.", { parse_mode: "HTML" });
+                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
+                    caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
+                    reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
+                });
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 2000);
+            }
             return;
-        }
+        } 
+        else if (state.orderPending) {
+            const existingApprovedOrder = await db.query(
+                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
+                [txId]
+            );
+            if (existingApprovedOrder.rows.length > 0) {
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                    "✅ This transaction was already verified! Your order has been processed.", { parse_mode: "HTML" });
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 2000);
+                return;
+            }
 
-        // Check for duplicate pending
-        const existingPendingOrder = await db.query(
-            "SELECT id FROM orders WHERE transaction_id = $1 AND status = 'PENDING'",
-            [txId]
-        );
-        if (existingPendingOrder.rows.length > 0) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                "⚠️ This transaction ID is already pending review. Our team will process it shortly.");
-            delete userState[userId];
-            return;
-        }
+            const existingPendingOrder = await db.query(
+                "SELECT id FROM orders WHERE transaction_id = $1 AND status = 'PENDING'",
+                [txId]
+            );
+            if (existingPendingOrder.rows.length > 0) {
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
+                    "⚠️ This transaction ID is already pending review. Our team will process it shortly.", { parse_mode: "HTML" });
+                delete userState[userId];
+                return;
+            }
 
-        const orderId = state.orderId;
-        const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
-        if (!order) {
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Order not found. Please contact support.");
-            delete userState[userId];
-            return;
-        }
+            const orderId = state.orderId;
+            const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
+            if (!order) {
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Order not found. Please contact support.", { parse_mode: "HTML" });
+                delete userState[userId];
+                return;
+            }
 
-        // Store transaction ID
-        await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
+            await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
 
-        const provider = resolveShegerPayProvider(state.paymentMethodName) || "telebirr";
-        const normalizedMethodName = state.paymentMethodName?.toString().trim().toLowerCase() || "";
-        const methods = await getPaymentMethods();
-        const selectedMethod = methods.find(m => m.name.toString().trim().toLowerCase() === normalizedMethodName)
-            || methods.find(m => m.name.toString().trim().toLowerCase().includes(normalizedMethodName))
-            || methods.find(m => normalizedMethodName.includes(m.name.toString().trim().toLowerCase()));
-        const expectedRecipient = selectedMethod?.account_number || null;
+            const provider = resolveShegerPayProvider(state.paymentMethodName) || "telebirr";
+            const normalizedMethodName = state.paymentMethodName?.toString().trim().toLowerCase() || "";
+            const methods = await getPaymentMethods();
+            const selectedMethod = methods.find(m => m.name.toString().trim().toLowerCase() === normalizedMethodName)
+                || methods.find(m => m.name.toString().trim().toLowerCase().includes(normalizedMethodName))
+                || methods.find(m => normalizedMethodName.includes(m.name.toString().trim().toLowerCase()));
+            const expectedRecipient = selectedMethod?.account_number || null;
 
-        const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod?.account_name, expectedRecipient);
+            const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod?.account_name, expectedRecipient);
 
-        if (verification.verified) {
-            await db.query(`UPDATE orders SET verified_by_shegerpay = true WHERE id = $1`, [orderId]);
-            if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
-                const ragnerResult = await createOrder(order.external_product_id, order.player_id);
-                if (ragnerResult && ragnerResult.success) {
-                    await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "🎮 UC Delivered Successfully! (Payment auto-verified)");
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Order #${orderId} auto-verified and auto-completed (Instant product)\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`);
+            if (verification.verified) {
+                await db.query(`UPDATE orders SET verified_by_shegerpay = true WHERE id = $1`, [orderId]);
+                if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
+                    const ragnerResult = await createOrder(order.external_product_id, order.player_id);
+                    if (ragnerResult && ragnerResult.success) {
+                        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "🎮 UC Delivered Successfully! (Payment auto-verified)", { parse_mode: "HTML" });
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Order #${orderId} auto-verified and auto-completed (Instant product)\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`);
+                    } else {
+                        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Delivery in progress. You will be notified when completed.", { parse_mode: "HTML" });
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `🟡 Order #${orderId} payment auto-verified, but instant delivery failed. Please complete manually.\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`, {
+                            reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                        });
+                    }
                 } else {
                     await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Delivery in progress. You will be notified when completed.");
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, `🟡 Order #${orderId} payment auto-verified, but instant delivery failed. Please complete manually.\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`, {
+                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
+                    let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
+                    if (order.user_inputs) {
+                        const inputs = parseUserInputs(order.user_inputs);
+                        if (inputs) {
+                            if (inputs.player_id) adminMsg += `🎮 Player ID: ${inputs.player_id}\n`;
+                            if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
+                            if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
+                            if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
+                        }
+                    }
+                    adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                    await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
+                        caption: adminMsg,
                         reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                     });
                 }
             } else {
-                await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.");
-                let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
+                let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
                 if (order.user_inputs) {
                     const inputs = parseUserInputs(order.user_inputs);
                     if (inputs) {
-                        if (inputs.player_id) adminMsg += `🎮 Player ID: ${inputs.player_id}\n`;
-                        if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
-                        if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
-                        if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
+                        if (inputs.email) caption += `\n📧 Email: ${inputs.email}\n`;
+                        if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
+                        if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
+                        if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
                     }
                 }
-                adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                caption += `\n💳 Payment Method: ${state.paymentMethodName || "Bank Transfer"}\n⚠️ Auto-verification failed: ${verification.error}\n\nUse buttons below to manage:`;
+                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your payment.", { parse_mode: "HTML" });
                 await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                    caption: adminMsg,
-                    reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                    caption: caption,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
+                            [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
+                        ],
+                    },
                 });
             }
-        } else {
-            // Manual fallback
-            let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
-            if (order.user_inputs) {
-                const inputs = parseUserInputs(order.user_inputs);
-                if (inputs) {
-                    if (inputs.email) caption += `\n📧 Email: ${inputs.email}\n`;
-                    if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
-                    if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
-                    if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
-                }
-            }
-            caption += `\n💳 Payment Method: ${state.paymentMethodName || "Bank Transfer"}\n⚠️ Auto-verification failed: ${verification.error}\n\nUse buttons below to manage:`;
-            await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your payment.");
-            await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                caption: caption,
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
-                        [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
-                    ],
-                },
-            });
+            delete userState[userId];
+            setTimeout(() => showMainMenu(ctx), 2000);
+            return;
         }
-        delete userState[userId];
-        return;
     }
-}
 
-    // Handle player ID input
-    if (!state || state.step !== "PLAYER") return;
-    const input = ctx.message.text.trim();
-    const product = state.product?.fullProduct;
-    if (!input) return ctx.reply("❌ Invalid input. Please try again.");
-    if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
-        return processFieldInput(ctx, product, state, input);
-    }
-    if (state.product?.type === "ragner" || (state.requiredFields && state.requiredFields.length === 1)) {
-        if (state.requiredFields && state.requiredFields.length === 1) {
-            const fieldName = state.requiredFields[0];
-            state.collectedData = {};
-            state.collectedData[fieldName] = input;
-            state.playerId = input;
-            state.playerName = "User Input";
-        } else {
-            state.playerId = input;
-            state.playerName = "User Input";
-        }
+  // Handle player ID input
+if (!state || state.step !== "PLAYER") return;
+const input = ctx.message.text.trim();
+const product = state.product?.fullProduct;
+if (!input) return ctx.reply("❌ Invalid input. Please try again.\n\nType /cancel to cancel");
+
+// PUBG product types that need Ragner validation
+const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
+
+// Ragner instant products AND database PUBG products all need validation
+if (state.product?.type === "ragner" || pubgTypes.includes(state.product?.product_type)) {
+    state.playerId = input;
+    
+    // Validate player for ALL PUBG product types
+    try {
+        // Show "validating" message
+        const waitMsg = await ctx.reply("🔍 Verifying Player ID...");
+        
+        let validation;
+        // For instant products, use specific product ID; for manual products, use generic validation
         if (state.product?.type === "ragner") {
-            try {
-                const validation = await validatePlayer(state.product.productId, input);
-                if (!validation || !validation.success) {
-                    return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.");
-                }
-                state.playerName = validation.data?.nickname || "Unknown Player";
-            } catch (error) {
-                console.error("Validation error:", error);
-                return ctx.reply("⏳ Service busy. Please try again in 2 minutes.");
-            }
+            validation = await validatePlayer(state.product.productId, input);
+        } else {
+            // For manual PUBG products, use generic product ID validation
+            validation = await validatePlayerOnly(input);
         }
-        state.step = "CONFIRM";
-        let confirmMessage = `🎮 Verification\n\n`;
-        if (state.product?.type === "ragner") confirmMessage += `👤 Name: ${state.playerName}\n`;
-        confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
-        return ctx.reply(confirmMessage, {
-            reply_markup: { inline_keyboard: [[{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }]] },
-        });
+        
+        // Delete the "validating" message
+        try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch(e) {}
+        
+        if (!validation || !validation.success) {
+            return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.\n\nType /cancel to cancel");
+        }
+        state.playerName = validation.data?.nickname || "Unknown Player";
+    } catch (error) {
+        console.error("Validation error:", error);
+        return ctx.reply("⏳ Service busy. Please try again in 2 minutes.\n\nType /cancel to cancel");
     }
+    
+    state.step = "CONFIRM";
+    let confirmMessage = "✅ Verification Successful\n\n";
+    confirmMessage += `👤 Name: ${state.playerName}\n`;
+    confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
+    
+    return ctx.reply(confirmMessage, {
+        reply_markup: { 
+            inline_keyboard: [
+                [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
+                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+            ] 
+        },
+    });
+} else if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
+    // If there are multiple fields (like TikTok), process them
+    return processFieldInput(ctx, product, state, input);
+}
 });
 
 // =====================
@@ -1885,7 +2031,7 @@ bot.on("photo", async (ctx) => {
 
     if (!state || (state.step !== "PAY" && state.step !== "DEPOSIT_PAYMENT_WAITING")) {
         console.log("❌ Not in PAY or DEPOSIT_PAYMENT_WAITING state");
-        return ctx.reply("⚠️ Please start a new order with /start");
+        return ctx.reply("⚠️ Please start a new order with /start", { parse_mode: "HTML" });
     }
 
     try {
@@ -1899,82 +2045,78 @@ bot.on("photo", async (ctx) => {
             userState[userId].depositPending = true;
             userState[userId].depositAmount = state.depositAmount;
             userState[userId].depositMethod = state.depositMethod;
-            await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:");
+            await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:\n\nType /cancel to cancel", { parse_mode: "HTML" });
             return;
         }
 
         // ----- BANK TRANSFER PRODUCT FLOW -----
-      // Product bank transfer flow
-if (state.step === "PAY" && state.productInfo) {
-    const product = state.productInfo;
-    console.log("Processing product order:", JSON.stringify(product, null, 2));
+        if (state.step === "PAY" && state.productInfo) {
+            const product = state.productInfo;
+            console.log("Processing product order:", JSON.stringify(product, null, 2));
 
-    let userInputs = {};
-    let extractedPlayerId = null, extractedPlayerName = null;
-    if (state.collectedData) {
-        userInputs = state.collectedData;
-        if (state.collectedData.player_id) {
-            extractedPlayerId = state.collectedData.player_id;
-            extractedPlayerName = state.collectedData.player_name || null;
+            let userInputs = {};
+            let extractedPlayerId = null, extractedPlayerName = null;
+            if (state.collectedData) {
+                userInputs = state.collectedData;
+                if (state.collectedData.player_id) {
+                    extractedPlayerId = state.collectedData.player_id;
+                    extractedPlayerName = state.collectedData.player_name || null;
+                }
+            }
+            if (state.playerId && !extractedPlayerId) {
+                extractedPlayerId = state.playerId;
+                extractedPlayerName = state.playerName || null;
+            }
+
+            let productIdToInsert = null;
+            let externalProductId = null;
+            if (product.type === "ragner") {
+                productIdToInsert = null;
+                externalProductId = product.productId;
+            } else {
+                productIdToInsert = product.productId;
+                externalProductId = null;
+            }
+
+            const result = await db.query(
+                `INSERT INTO orders 
+                (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, 
+                 player_id, player_name, delivery_type, payment_file_id, status, user_inputs, payment_method)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'PENDING', $11, 'bank_transfer')
+                RETURNING id`,
+                [
+                    userId,
+                    ctx.from.username || null,
+                    productIdToInsert,
+                    externalProductId,
+                    product.name,
+                    product.price,
+                    extractedPlayerId,
+                    extractedPlayerName,
+                    product.type === "ragner" ? "ragner" : "manual",
+                    fileId,
+                    JSON.stringify(userInputs),
+                ]
+            );
+            const orderId = result.rows[0].id;
+
+            userState[userId].orderId = orderId;
+            userState[userId].tempFileId = fileId;
+            userState[userId].step = "AWAITING_TX_ID";
+            userState[userId].orderPending = true;
+            userState[userId].paymentMethodName = state.paymentMethod?.name || "Bank Transfer";
+            userState[userId].productInfo = product;
+
+            await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:\n\nType /cancel to cancel", { parse_mode: "HTML" });
+            return;
         }
-    }
-    if (state.playerId && !extractedPlayerId) {
-        extractedPlayerId = state.playerId;
-        extractedPlayerName = state.playerName || null;
-    }
-
-    // Determine product_id and external_product_id
-    let productIdToInsert = null;
-    let externalProductId = null;
-    if (product.type === "ragner") {
-        // For Ragner products, product_id is NULL (not in local products table)
-        productIdToInsert = null;
-        externalProductId = product.productId;
-    } else {
-        // For manual database products
-        productIdToInsert = product.productId;
-        externalProductId = null;
-    }
-
-    const result = await db.query(
-        `INSERT INTO orders 
-        (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, 
-         player_id, player_name, delivery_type, payment_file_id, status, user_inputs, payment_method)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'PENDING', $11, 'bank_transfer')
-        RETURNING id`,
-        [
-            userId,
-            ctx.from.username || null,
-            productIdToInsert,
-            externalProductId,
-            product.name,
-            product.price,
-            extractedPlayerId,
-            extractedPlayerName,
-            product.type === "ragner" ? "ragner" : "manual",
-            fileId,
-            JSON.stringify(userInputs),
-        ]
-    );
-    const orderId = result.rows[0].id;
-
-    userState[userId].orderId = orderId;
-    userState[userId].tempFileId = fileId;
-    userState[userId].step = "AWAITING_TX_ID";
-    userState[userId].orderPending = true;
-    userState[userId].paymentMethodName = state.paymentMethod?.name || "Bank Transfer";
-    userState[userId].productInfo = product;
-
-    await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:");
-    return;
-}
-        // If none of the above, fallback
+        
         console.log("❌ Unhandled state in photo handler");
-        await ctx.reply("⚠️ Something went wrong. Please start over with /start");
+        await ctx.reply("⚠️ Something went wrong. Please start over with /start", { parse_mode: "HTML" });
         delete userState[userId];
     } catch (error) {
         console.error("❌ Payment screenshot error:", error);
-        await ctx.reply("❌ Error processing payment. Please try again or contact support.");
+        await ctx.reply("❌ Error processing payment. Please try again or contact support.", { parse_mode: "HTML" });
     }
 });
 

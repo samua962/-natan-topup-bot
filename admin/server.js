@@ -16,7 +16,6 @@ const app = express();
 app.use(cors());
 
 // IMPORTANT: ShegerPay webhook needs RAW body for signature verification
-// This middleware captures the raw body BEFORE any JSON parsing
 app.use("/webhook/shegerpay", (req, res, next) => {
     let rawData = '';
     
@@ -25,10 +24,8 @@ app.use("/webhook/shegerpay", (req, res, next) => {
     });
     
     req.on('end', () => {
-        // Store the raw body as a string (exactly as received)
         req.rawBody = rawData;
         
-        // Parse JSON for route handler convenience
         if (rawData) {
             try {
                 req.body = JSON.parse(rawData);
@@ -78,7 +75,7 @@ app.use("/api/settings", authMiddleware, settingsRoutes);
 app.use("/api/users", authMiddleware, usersRoutes);
 app.use("/api/giveaway", authMiddleware, giveawayRoutes);
 
-// Telegram webhook (keep this at the end)
+// Telegram webhook
 app.post("/webhook", (req, res) => {
     const bot = require("../bot/bot");
     bot.handleUpdate(req.body, res);
