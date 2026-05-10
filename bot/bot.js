@@ -144,7 +144,7 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
 
             return { verified: true, data };
         } catch (err) {
-            console.error(`ShegerPay verification attempt ${attempt + 1} failed:`, err.message);
+            console.error(`Verification attempt ${attempt + 1} failed:`, err.message);
             if (err.response) {
                 console.error("Status:", err.response.status);
                 console.error("Data:", err.response.data);
@@ -867,7 +867,7 @@ async function showDepositAmounts(ctx) {
 async function showDepositPaymentMethods(ctx, amount) {
     const methods = await getPaymentMethods();
     if (methods.length === 0) {
-        await safeEdit(ctx, "⚠️ Payment methods not configured. Please contact support.", []);
+        await safeEdit(ctx, "⚠️ Payment methods not configured. Please contact support. @aman_jj", []);
         return;
     }
     const userId = ctx.from.id;
@@ -1033,7 +1033,7 @@ async function showPaymentOptions(ctx, productInfo) {
 async function showBankTransferMethods(ctx, productInfo) {
     const methods = await getPaymentMethods();
     if (methods.length === 0) {
-        await safeEdit(ctx, "⚠️ Payment methods not configured. Please contact support.", []);
+        await safeEdit(ctx, "⚠️ Payment methods not configured. Please contact support. @aman_jj", []);
         return false;
     }
     const userId = ctx.from.id;
@@ -1655,16 +1655,34 @@ bot.on("callback_query", async (ctx) => {
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
         return safeEdit(ctx, "🎮 Select Game:", buttons);
     }
-    if (data === "info_menu") {
-        const emojiText = "ℹ️ ABOUT NATAN TOP UP";
-        const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
-        return ctx.editMessageText(message, { parse_mode: "HTML" });
+   if (data === "info_menu") {
+    const emojiText = "ℹ️ ABOUT NATAN TOP UP";
+    const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
+    
+    try {
+        if (ctx.callbackQuery.message.photo) {
+            return ctx.editMessageCaption(message, { parse_mode: "HTML" });
+        } else {
+            return ctx.editMessageText(message, { parse_mode: "HTML" });
+        }
+    } catch (e) {
+        return ctx.reply(message, { parse_mode: "HTML" });
     }
-    if (data === "help_menu") {
-        const emojiText = "❓ HELP & GUIDE";
-        const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
-        return ctx.editMessageText(message, { parse_mode: "HTML" });
+}
+if (data === "help_menu") {
+    const emojiText = "❓ HELP & GUIDE";
+    const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+    
+    try {
+        if (ctx.callbackQuery.message.photo) {
+            return ctx.editMessageCaption(message, { parse_mode: "HTML" });
+        } else {
+            return ctx.editMessageText(message, { parse_mode: "HTML" });
+        }
+    } catch (e) {
+        return ctx.reply(message, { parse_mode: "HTML" });
     }
+}
 
     // ----- ORDER DETAIL -----
     if (data.startsWith("order_detail_")) {
@@ -1901,7 +1919,7 @@ bot.on("callback_query", async (ctx) => {
             if (order.delivery_type === "ragner") {
                 const validation = await validatePlayer(order.external_product_id, order.player_id);
                 if (!validation || !validation.success) {
-                    await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support.", { parse_mode: "HTML" });
+                    await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" });
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED (Validation Failed)\n❌ Auto-delivery unavailable. Please deliver manually.\n\n👇 Click "Complete" after manual delivery`;
                     const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
@@ -1975,7 +1993,7 @@ bot.on("callback_query", async (ctx) => {
             if (!order) return ctx.editMessageText("❌ Order not found");
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support.", { parse_mode: "HTML" });
+            await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support. @aman_jj", { parse_mode: "HTML" });
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n❌ STATUS: REJECTED`;
             if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
             else await ctx.editMessageText(msg);
@@ -2082,7 +2100,7 @@ bot.on("photo", async (ctx) => {
             if (extractedTxId) {
                 try {
                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                        `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying with ShegerPay...`, { parse_mode: "HTML" });
+                        `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying payment...`, { parse_mode: "HTML" });
                 } catch(e) {}
                 
                 const depositAmount = state.depositAmount;
@@ -2143,9 +2161,9 @@ bot.on("photo", async (ctx) => {
                     // Verification failed - send to admin for manual review
                     try {
                         await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                            "⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                            "⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly. \n\nContact support. @aman_jj", { parse_mode: "HTML" });
                     } catch(e) {
-                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.\n\nContact support. @aman_jj", { parse_mode: "HTML" });
                     }
                     
                     const depositResult = await db.query(
@@ -2180,9 +2198,9 @@ bot.on("photo", async (ctx) => {
                 // No TX ID found - send to admin for manual review
                 try {
                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                        "⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                        "⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.\n\nContact support. @aman_jj", { parse_mode: "HTML" });
                 } catch(e) {
-                    await ctx.reply("⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                    await ctx.reply("⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.\n\nContact support. @aman_jj", { parse_mode: "HTML" });
                 }
                 
                 // Create deposit request and send to admin
@@ -2385,9 +2403,9 @@ bot.on("photo", async (ctx) => {
                     // Verification failed - send to admin for manual review
                     try {
                         await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                            "⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                            "⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved. \n\nContact support. @aman_jj", { parse_mode: "HTML" });
                     } catch(e) {
-                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved. \n\nContact support. @aman_jj", { parse_mode: "HTML" });
                     }
                     
                     let adminCaption = `📥 NEW ORDER (Manual Review)\n\n` +
@@ -2425,7 +2443,7 @@ bot.on("photo", async (ctx) => {
                 // No TX ID found - send to admin
                 try {
                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                        "⚠️ Could not read transaction ID from image.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                        "⚠️ Could not read transaction ID from image.\n\nYour order has been submitted for manual review. You will be notified when approved.\n\nContact support. @aman_jj", { parse_mode: "HTML" });
                 } catch(e) {}
                 
                 let adminCaption = `📥 NEW ORDER (Manual Review - Couldn't read TX ID)\n\n` +
