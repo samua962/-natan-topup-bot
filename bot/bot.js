@@ -1655,32 +1655,60 @@ bot.on("callback_query", async (ctx) => {
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
         return safeEdit(ctx, "🎮 Select Game:", buttons);
     }
-   if (data === "info_menu") {
+ if (data === "info_menu") {
     const emojiText = "ℹ️ ABOUT NATAN TOP UP";
     const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
     
+    const buttons = [
+        [{ text: "🔙 Back", callback_data: "back" }],
+        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+    ];
+    
     try {
         if (ctx.callbackQuery.message.photo) {
-            return ctx.editMessageCaption(message, { parse_mode: "HTML" });
+            return ctx.editMessageCaption(message, { 
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
+            });
         } else {
-            return ctx.editMessageText(message, { parse_mode: "HTML" });
+            return ctx.editMessageText(message, { 
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
+            });
         }
     } catch (e) {
-        return ctx.reply(message, { parse_mode: "HTML" });
+        return ctx.reply(message, { 
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: buttons }
+        });
     }
 }
 if (data === "help_menu") {
     const emojiText = "❓ HELP & GUIDE";
     const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
     
+    const buttons = [
+        [{ text: "🔙 Back", callback_data: "back" }],
+        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+    ];
+    
     try {
         if (ctx.callbackQuery.message.photo) {
-            return ctx.editMessageCaption(message, { parse_mode: "HTML" });
+            return ctx.editMessageCaption(message, { 
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
+            });
         } else {
-            return ctx.editMessageText(message, { parse_mode: "HTML" });
+            return ctx.editMessageText(message, { 
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
+            });
         }
     } catch (e) {
-        return ctx.reply(message, { parse_mode: "HTML" });
+        return ctx.reply(message, { 
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: buttons }
+        });
     }
 }
 
