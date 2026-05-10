@@ -64,7 +64,7 @@ function parseShegerTimestamp(timestampStr) {
 // =====================
 // 🟢 SHEGERPAY VERIFICATION (with transaction ID)
 // =====================
-async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, merchantName = "Natan Top Up", expectedRecipientAccount = null) {
+async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, merchantName = "Natan Top Up", expectedRecipientAccount = null, senderAccount = null) {
     if (process.env.SHEGERPAY_ENABLED !== "true") {
         return { verified: false, error: "ShegerPay disabled" };
     }
@@ -79,14 +79,21 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 return { verified: false, error: "Payment provider could not be determined" };
             }
 
+            const requestBody = {
+                provider: normalizedProvider,
+                transaction_id: transactionId,
+                amount: expectedAmount,
+                merchant_name: merchantName,
+            };
+
+            // Add sender_account for BOA
+            if (senderAccount && normalizedProvider === "boa") {
+                requestBody.sender_account = senderAccount;
+            }
+
             const response = await axios.post(
                 "https://api.shegerpay.com/api/v1/verify",
-                {
-                    provider: normalizedProvider,
-                    transaction_id: transactionId,
-                    amount: expectedAmount,
-                    merchant_name: merchantName,
-                },
+                requestBody,
                 {
                     headers: {
                         "Content-Type": "application/json",
@@ -100,7 +107,7 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
 
             const verified = data.verified === true || data.valid === true;
             if (!verified) {
-                return { verified: false, error: data.message || "Verification failed", details: data };
+                return { verified: false, error: data.message || data.detail?.message || "Verification failed", details: data };
             }
 
             let paidAmount = data.settled_amount != null ? parseFloat(data.settled_amount) : parseFloat(data.amount);
@@ -143,7 +150,7 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 console.error("Data:", err.response.data);
             }
             if (attempt === maxRetries) {
-                return { verified: false, error: err.message };
+                return { verified: false, error: err.response?.data?.detail?.message || err.message };
             }
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
@@ -156,6 +163,242 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
 function roundPrice(price) {
     const rounded = Math.round(price / 5) * 5;
     return Math.max(rounded, 5);
+}
+
+// =====================
+// 🟢 Extract Sender Account from OCR Text (for BOA)
+// =====================
+function extractSenderAccount(fullText) {
+    if (!fullText) return null;
+    
+    const patterns = [
+        /Source\s*Account[:\s]*(\d{4,}\*{0,4}\d{0,4})/i,
+        /Sender\s*Account[:\s]*(\d{4,}\*{0,4}\d{0,4})/i,
+        /Payer\s*Account[:\s]*(\d{4,}\*{0,4}\d{0,4})/i,
+        /From\s*(?:Account)?[:\s]*(\d{4,}\*{0,4}\d{0,4})/i,
+        /(\d{1,2}\*{3,5}\d{3,5})/,
+    ];
+    
+    for (const pattern of patterns) {
+        const match = fullText.match(pattern);
+        if (match && match[1]) {
+            const account = match[1].replace(/\s/g, '');
+            console.log("✅ Found sender account:", account);
+            return account;
+        }
+    }
+    
+    return null;
+}
+
+// =====================
+// 🟢 GOOGLE CLOUD VISION OCR - Extract Transaction ID from Image (FINAL)
+// =====================
+async function extractTxIdFromImage(imageFileId) {
+    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    if (!apiKey) {
+        console.error("Google API key not configured");
+        return { txId: null, fullText: "" };
+    }
+
+    try {
+        const fileInfo = await bot.telegram.getFile(imageFileId);
+        const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileInfo.file_path}`;
+        
+        const imageResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+        const base64Image = Buffer.from(imageResponse.data).toString('base64');
+        
+        const response = await axios.post(
+            `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+            {
+                requests: [{
+                    image: { content: base64Image },
+                    features: [{ type: "TEXT_DETECTION", maxResults: 1 }]
+                }]
+            },
+            {
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }
+        );
+        
+        const textAnnotations = response.data?.responses?.[0]?.textAnnotations;
+        
+        if (!textAnnotations || textAnnotations.length === 0) {
+            console.log("❌ No text found in image");
+            return { txId: null, fullText: "" };
+        }
+        
+        const fullText = textAnnotations[0]?.description || "";
+        console.log("📝 Full detected text:");
+        console.log(fullText);
+        console.log("--- END OF TEXT ---");
+        
+        const skipWords = [
+            'successful', 'download', 'share', 'transfer', 'money', 'prizes',
+            'million', 'etb', 'birr', 'transaction', 'time', 'type', 'number',
+            'abou', 'ama', 'manuel', 'hailu', 'batru', 'finished', 'play',
+            'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr'
+        ];
+        
+        let txId = null;
+        
+        // Strategy 1: Look for labeled transaction IDs
+        console.log("🔍 Strategy 1: Looking for labeled TX IDs...");
+        const labelPatterns = [
+            /Transaction\s*Reference[:\s]*(FT\s*[A-Za-z0-9]{6,30})/i,
+            /Reference[:\s]*(FT\s*[A-Za-z0-9]{6,30})/i,
+            /Transaction\s*(?:No|Number|ID|#)[:\s]*([A-Za-z0-9]{6,30})/i,
+            /Reference\s*(?:No|Number|ID)?[:\s]*([A-Za-z0-9]{6,30})/i,
+            /Receipt\s*(?:No|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
+            /FT[:\s#]*([A-Za-z0-9]{6,30})/i,
+            /Trx\s*(?:No|ID|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
+        ];
+        
+        for (const pattern of labelPatterns) {
+            const match = fullText.match(pattern);
+            if (match && match[1]) {
+                const candidate = match[1].replace(/\s/g, '').trim();
+                if (!skipWords.includes(candidate.toLowerCase()) && candidate.length >= 6) {
+                    txId = candidate;
+                    console.log("✅ Found TX ID via label:", txId);
+                    break;
+                }
+            }
+        }
+        
+        // Strategy 2: Look for lines containing transaction keywords
+        if (!txId) {
+            console.log("🔍 Strategy 2: Looking for transaction lines...");
+            const lines = fullText.split('\n');
+            for (const line of lines) {
+                const lowerLine = line.toLowerCase();
+                if (lowerLine.includes('transaction') || lowerLine.includes('reference') || 
+                    lowerLine.includes('receipt') || lowerLine.includes('ft') ||
+                    lowerLine.includes('trx') || lowerLine.includes('txn')) {
+                    
+                    console.log("📄 Examining line:", line);
+                    
+                    const codeMatch = line.match(/([A-Za-z0-9]{8,30})/);
+                    if (codeMatch && !skipWords.includes(codeMatch[1].toLowerCase())) {
+                        txId = codeMatch[1];
+                        console.log("✅ Found TX ID in transaction line:", txId);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Strategy 2.5: Look for the NEXT line after a transaction label
+        if (!txId) {
+            console.log("🔍 Strategy 2.5: Looking for ID on line after transaction label...");
+            const lines = fullText.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                const lowerLine = lines[i].toLowerCase().trim();
+                if (lowerLine.includes('transaction number') || 
+                    lowerLine.includes('transaction id') ||
+                    lowerLine.includes('transaction reference') ||
+                    lowerLine.includes('receipt') ||
+                    lowerLine.includes('Lakkoofsa sochii') ||
+                    lowerLine.includes('Within BOA') ||
+                    lowerLine.includes('transaction to')) {
+                    
+                    console.log("📄 Found label line:", lines[i].trim());
+                    
+                    for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+                        const line = lines[j].trim();
+                        if (line && !skipWords.some(w => line.toLowerCase().includes(w))) {
+                            console.log("   Checking line", j + ":", line);
+                            const codeMatch = line.match(/([A-Z0-9]{2,4}\s*\d{2,4}[A-Z0-9]{2,8}|[A-Z0-9]{8,20})/i);
+                            if (codeMatch) {
+                                const candidate = codeMatch[1].replace(/\s/g, '').trim();
+                                if (candidate.length >= 8 && /[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
+                                    txId = candidate;
+                                    console.log("✅ Found TX ID on line after label:", txId, "(line index:", j, ")");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (txId) break;
+                }
+            }
+        }
+        
+        // Strategy 3: Pattern matching for IDs with mixed letters and numbers
+        if (!txId) {
+            console.log("🔍 Strategy 3: Pattern matching...");
+            const items = fullText.split(/[\n\s]+/);
+            
+            for (const item of items) {
+                const cleaned = item.trim();
+                if (cleaned.length < 8 || cleaned.length > 25) continue;
+                if (skipWords.some(w => cleaned.toLowerCase() === w)) continue;
+                if (/^\d{4}\/\d{2}\/\d{2}$/.test(cleaned)) continue;
+                if (/^\d{2}:\d{2}(:\d{2})?$/.test(cleaned)) continue;
+                if (/%$/.test(cleaned)) continue;
+                if (/ETB/i.test(cleaned) || /^[-]?\d+\.\d{2}$/.test(cleaned)) continue;
+                if (/^251\d+$/.test(cleaned) || /^09\d+$/.test(cleaned) || /^\d{10,}$/.test(cleaned)) continue;
+                if (/\/s$/i.test(cleaned)) continue;
+                
+                if (/[A-Za-z]/.test(cleaned) && /\d/.test(cleaned) && cleaned.length >= 8) {
+                    txId = cleaned;
+                    console.log("✅ Found TX ID via mixed alphanumeric:", txId);
+                    break;
+                }
+            }
+        }
+        
+        // Strategy 4: Last resort
+        if (!txId) {
+            console.log("🔍 Strategy 4: Last resort search...");
+            const matches = fullText.match(/\b([A-Z]{2,4}[0-9]{4,}[A-Z0-9]{0,8})\b/g);
+            if (matches) {
+                for (const match of matches) {
+                    const candidate = match.trim();
+                    if (candidate.length >= 8 && !skipWords.includes(candidate.toLowerCase())) {
+                        txId = candidate;
+                        console.log("✅ Found TX ID via last resort:", txId);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (!txId) {
+            console.log("❌ Could not identify transaction ID in text");
+            return { txId: null, fullText };
+        }
+        
+        // Final cleanup
+        txId = txId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 40);
+        
+        // Check if "FT" prefix is nearby (for BOA)
+        if (!txId.toUpperCase().startsWith('FT') && fullText) {
+            const escapedTxId = txId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const ftPattern = new RegExp(`FT\\s*${escapedTxId}`, 'i');
+            if (ftPattern.test(fullText)) {
+                txId = 'FT' + txId;
+                console.log("✅ Added FT prefix to TX ID:", txId);
+            }
+            const lines = fullText.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(txId) && i > 0 && lines[i-1].toUpperCase().includes('FT')) {
+                    txId = 'FT' + txId;
+                    console.log("✅ Added FT prefix from previous line:", txId);
+                    break;
+                }
+            }
+        }
+        
+        console.log("🧹 Final TX ID:", txId);
+        
+        return { txId, fullText };
+        
+    } catch (error) {
+        console.error("❌ Cloud Vision API error:", error.response?.data || error.message);
+        return { txId: null, fullText: "" };
+    }
 }
 
 // =====================
@@ -356,7 +599,6 @@ async function safeEdit(ctx, text, buttons) {
         }
     } catch (error) {
         console.error("SafeEdit error:", error.message);
-        // Fallback without HTML if it fails
         try {
             return ctx.reply(text.replace(/<[^>]*>/g, ''), {
                 reply_markup: { inline_keyboard: buttons },
@@ -406,7 +648,6 @@ async function safeEditMedia(ctx, imageUrl, caption, buttons) {
 // =====================
 function buildButtons(items, singleColumn = true) {
     const rows = [];
-    // Default to single column (vertical layout)
     for (let i = 0; i < items.length; i++) {
         rows.push([items[i]]);
     }
@@ -498,7 +739,6 @@ async function showRagnerProducts(ctx) {
         }
         const buttons = buildButtons(productButtons);
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-       
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
         await safeEdit(ctx, "⚡ PUBG UC Instant Delivery\n\nMax: 3850 UC\n\nSelect UC amount:", buttons);
     } catch (error) {
@@ -512,7 +752,6 @@ async function showRagnerProducts(ctx) {
 // =====================
 async function showDatabaseProducts(ctx, subId) {
     try {
-        // Get subcategory info FIRST
         const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
         const subcategory = subResult.rows[0];
         
@@ -546,14 +785,12 @@ async function showDatabaseProducts(ctx, subId) {
         if (productType === "tiktok") title = "📱 TikTok Coins:";
         if (productType === "uc_manual") title = "📦 PUBG UC Manual:";
         
-        // Use subcategory image if available, otherwise fallback to category image
         let displayImage = subcategory?.image_url;
         if (!displayImage && subcategory?.category_id) {
             const catResult = await db.query("SELECT image_url FROM categories WHERE id = $1", [subcategory.category_id]);
             displayImage = catResult.rows[0]?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         }
         
-        // Show ONE message with subcategory image and products
         await safeEditMedia(ctx, displayImage, title, buttons);
         
     } catch (error) {
@@ -695,7 +932,6 @@ async function askForFields(ctx, product) {
     const state = userState[ctx.from.id];
     const productType = product.product_type;
     
-    // PUBG product types that need player validation
     const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
     
     if (pubgTypes.includes(productType)) {
@@ -836,9 +1072,8 @@ By paying, you confirm you are 18+ and agree to our Terms.
 🔹 INSTRUCTIONS:
 1️⃣ Copy account & verify name.
 2️⃣ Send EXACTLY ${productInfo.price} ETB only.
-3️⃣ After payment, copy the Transaction ID from your bank app or SMS.
-4️⃣ Send payment screenshot here.
-5️⃣ Then paste the Transaction ID.
+3️⃣ After payment, send the payment screenshot here.
+4️⃣ We will verify automatically.
 
 ⏳ Order expires in 30 minutes.
 Type /cancel to cancel.
@@ -892,7 +1127,6 @@ async function processWalletPayment(ctx, productInfo) {
                 process.env.ADMIN_ID,
                 `🟢 WALLET PURCHASE (AUTO-COMPLETED & DELIVERED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n✅ Auto-completed from wallet balance, UC delivered.`
             );
-            // Return to main menu after success
             setTimeout(() => showMainMenu(ctx), 2000);
         } else {
             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
@@ -933,7 +1167,6 @@ async function processWalletPayment(ctx, productInfo) {
         await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMessage, {
             reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }]] },
         });
-        // Return to main menu after success
         setTimeout(() => showMainMenu(ctx), 3000);
         return true;
     }
@@ -982,6 +1215,7 @@ async function showMainMenu(ctx) {
         await ctx.reply("⚠️ System error. Please try /start again.");
     }
 }
+
 // =====================
 // 🟢 GIVEAWAY HELPERS
 // =====================
@@ -1221,8 +1455,6 @@ bot.command("debug", async (ctx) => {
     await ctx.reply(`User State:\n${JSON.stringify(state, null, 2)}`);
 });
 
-
-
 // =====================
 // 🟢 SHOW PRODUCTS BY CATEGORY (for categories without subcategories)
 // =====================
@@ -1297,63 +1529,58 @@ bot.on("callback_query", async (ctx) => {
         return showMainMenu(ctx);
     }
     
-   // ----- BACK BUTTON -----
-if (data === "back") {
-    const prev = getPreviousScreen(userId);
-    if (prev) {
-        popHistory(userId);
-        
-        // Navigate to the specific previous screen
-        if (prev.screen === "categories") {
-            return showCategories(ctx);
-        }
-        if (prev.screen === "products") {
-            // Go back to subcategory products list
-            if (prev.data?.subId) {
-                return showDatabaseProducts(ctx, prev.data.subId);
+    // ----- BACK BUTTON -----
+    if (data === "back") {
+        const prev = getPreviousScreen(userId);
+        if (prev) {
+            popHistory(userId);
+            
+            if (prev.screen === "categories") {
+                return showCategories(ctx);
             }
-        }
-        if (prev.screen === "subcategories") {
-            // Go back to subcategories list for a category
-            if (prev.data?.categoryId) {
-                const categoryResult = await db.query(
-                    "SELECT * FROM categories WHERE id = $1 AND is_active = true", 
-                    [prev.data.categoryId]
-                );
-                const category = categoryResult.rows[0];
-                if (category) {
-                    const subs = await db.query(
-                        "SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", 
-                        [prev.data.categoryId]
-                    );
-                    const buttons = buildButtons(
-                        subs.rows.map((s) => ({ 
-                            text: s.display_name, 
-                            callback_data: `sub_${s.id}_${s.name}` 
-                        }))
-                    );
-                    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-                    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-                    
-                    const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-                    const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
-                    
-                    return safeEditMedia(ctx, categoryImage, caption, buttons);
+            if (prev.screen === "products") {
+                if (prev.data?.subId) {
+                    return showDatabaseProducts(ctx, prev.data.subId);
                 }
             }
+            if (prev.screen === "subcategories") {
+                if (prev.data?.categoryId) {
+                    const categoryResult = await db.query(
+                        "SELECT * FROM categories WHERE id = $1 AND is_active = true", 
+                        [prev.data.categoryId]
+                    );
+                    const category = categoryResult.rows[0];
+                    if (category) {
+                        const subs = await db.query(
+                            "SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", 
+                            [prev.data.categoryId]
+                        );
+                        const buttons = buildButtons(
+                            subs.rows.map((s) => ({ 
+                                text: s.display_name, 
+                                callback_data: `sub_${s.id}_${s.name}` 
+                            }))
+                        );
+                        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+                        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+                        
+                        const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+                        const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
+                        
+                        return safeEditMedia(ctx, categoryImage, caption, buttons);
+                    }
+                }
+            }
+            if (prev.screen === "wallet") return showWallet(ctx);
+            if (prev.screen === "deposit_amounts") return showDepositAmounts(ctx);
+            if (prev.screen === "myorders") return showMyOrders(ctx);
+            if (prev.screen === "support") return showSupport(ctx);
+            if (prev.screen === "main_menu") return showMainMenu(ctx);
+            
+            return showMainMenu(ctx);
         }
-        if (prev.screen === "wallet") return showWallet(ctx);
-        if (prev.screen === "deposit_amounts") return showDepositAmounts(ctx);
-        if (prev.screen === "myorders") return showMyOrders(ctx);
-        if (prev.screen === "support") return showSupport(ctx);
-        if (prev.screen === "main_menu") return showMainMenu(ctx);
-        
-        // Default fallback
         return showMainMenu(ctx);
     }
-    // No history - go to main menu
-    return showMainMenu(ctx);
-}
 
     // ----- DEPOSIT FLOW -----
     if (data.startsWith("deposit_paymethod_")) {
@@ -1445,60 +1672,53 @@ if (data === "back") {
         return showOrderDetail(ctx, orderId);
     }
 
-  // ----- CATEGORY SELECTION -----
-if (data.startsWith("cat_")) {
-    const categoryId = data.split("_")[1];
-    const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
-    const category = categoryResult.rows[0];
-    if (!category) return ctx.reply("❌ Category not found.");
-    
-    const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
-    const buttons = buildButtons(
-        subs.rows.map((s) => ({ text: s.display_name, callback_data: `sub_${s.id}_${s.name}` }))
-    );
-    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
-    
-    const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-    const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
-    
-    if (subs.rows.length === 0) {
-        // No subcategories - show products directly
+    // ----- CATEGORY SELECTION -----
+    if (data.startsWith("cat_")) {
+        const categoryId = data.split("_")[1];
+        const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
+        const category = categoryResult.rows[0];
+        if (!category) return ctx.reply("❌ Category not found.");
+        
+        const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
+        const buttons = buildButtons(
+            subs.rows.map((s) => ({ text: s.display_name, callback_data: `sub_${s.id}_${s.name}` }))
+        );
+        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        
+        const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
+        const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
+        
+        if (subs.rows.length === 0) {
+            pushHistory(userId, "categories");
+            return showProductsByCategory(ctx, categoryId);
+        }
+        
         pushHistory(userId, "categories");
-        return showProductsByCategory(ctx, categoryId);
+        await safeEditMedia(ctx, categoryImage, caption, buttons);
+        return;
     }
-    
-    // Save history BEFORE showing subcategories
-    pushHistory(userId, "categories");
-    await safeEditMedia(ctx, categoryImage, caption, buttons);
-    return;
-}
 
     // ----- SUBCATEGORY -----
-   // ----- SUBCATEGORY -----
-// ----- SUBCATEGORY -----
-if (data.startsWith("sub_")) {
-    const [, subId, name] = data.split("_");
-    
-    // Get subcategory info
-    const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
-    const subcategory = subResult.rows[0];
-    
-    // Save history with category data for back navigation
-    pushHistory(userId, "subcategories", { 
-        categoryId: subcategory?.category_id 
-    });
-    
-    // SPECIAL: Handle Instant UC
-    if (name === "instant" || name === "uc_instant") {
-        state.mode = "instant";
-        return showRagnerProducts(ctx);
+    if (data.startsWith("sub_")) {
+        const [, subId, name] = data.split("_");
+        
+        const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
+        const subcategory = subResult.rows[0];
+        
+        pushHistory(userId, "subcategories", { 
+            categoryId: subcategory?.category_id 
+        });
+        
+        if (name === "instant" || name === "uc_instant") {
+            state.mode = "instant";
+            return showRagnerProducts(ctx);
+        }
+        
+        state.mode = "database";
+        return showDatabaseProducts(ctx, subId);
     }
     
-    // For all other subcategories - show products directly
-    state.mode = "database";
-    return showDatabaseProducts(ctx, subId);
-}
     // ----- RAGNER PRODUCT -----
     if (data.startsWith("ragner_")) {
         const parts = data.split("_");
@@ -1775,7 +1995,6 @@ bot.on("text", async (ctx) => {
     const userId = ctx.from.id;
     const state = userState[userId];
 
-    // Handle cancel command
     if (text.toLowerCase() === "/cancel" || text.toLowerCase() === "cancel") {
         delete userState[userId];
         clearHistory(userId);
@@ -1783,245 +2002,58 @@ bot.on("text", async (ctx) => {
         return showMainMenu(ctx);
     }
 
-    // Handle transaction ID input for deposit or payment
-    if (state && state.step === "AWAITING_TX_ID") {
-        const txId = ctx.message.text.trim();
-        if (!txId) {
-            await ctx.reply("❌ Please enter a valid transaction ID.", { parse_mode: "HTML" });
-            return;
-        }
+    // Handle player ID input
+    if (!state || state.step !== "PLAYER") return;
+    const input = ctx.message.text.trim();
+    const product = state.product?.fullProduct;
+    if (!input) return ctx.reply("❌ Invalid input. Please try again.\n\nType /cancel to cancel");
 
-        const validatingMsg = await ctx.reply("⏳ Validating transaction... Please wait.", { parse_mode: "HTML" });
+    const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
 
-        if (state.depositPending) {
-            const existingApproved = await db.query(
-                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-                [txId]
-            );
-            if (existingApproved.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                    "✅ This transaction was already verified! Your wallet has been updated.", { parse_mode: "HTML" });
-                delete userState[userId];
-                setTimeout(() => showMainMenu(ctx), 2000);
-                return;
-            }
-
-            const existingPending = await db.query(
-                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'PENDING'",
-                [txId]
-            );
-            if (existingPending.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                    "⚠️ This transaction ID is already pending review. Our team will process it shortly.", { parse_mode: "HTML" });
-                delete userState[userId];
-                return;
-            }
-
-            const depositAmount = state.depositAmount;
-            const method = state.depositMethod;
-            const provider = resolveShegerPayProvider(method?.name) || "telebirr";
-            const expectedRecipient = method?.account_number || null;
-
-            userState[userId].tempTxId = txId;
-
-            const verification = await verifyPaymentWithTxId(provider, txId, depositAmount, method.account_name, expectedRecipient);
-
-            if (verification.verified) {
-                const result = await db.query(
-                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-                     VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
-                    [userId, depositAmount, method.name, state.tempFileId, txId]
-                );
-                const depositId = result.rows[0].id;
-                await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${txId})`);
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB successfully verified and added to your wallet.`, { parse_mode: "HTML" });
-                await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\nUser: @${ctx.from.username || userId}\nAmount: ${depositAmount} ETB\nMethod: ${method.name}\nTransaction ID: ${txId}`);
-                delete userState[userId];
-                setTimeout(() => showMainMenu(ctx), 2000);
+    if (state.product?.type === "ragner" || pubgTypes.includes(state.product?.product_type)) {
+        state.playerId = input;
+        
+        try {
+            const waitMsg = await ctx.reply("🔍 Verifying Player ID...");
+            
+            let validation;
+            if (state.product?.type === "ragner") {
+                validation = await validatePlayer(state.product.productId, input);
             } else {
-                const result = await db.query(
-                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-                     VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
-                    [userId, depositAmount, method.name, state.tempFileId, txId]
-                );
-                const depositId = result.rows[0].id;
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your deposit shortly.", { parse_mode: "HTML" });
-                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                    caption: `💰 NEW DEPOSIT REQUEST (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Transaction ID: ${txId}\n🧾 Request ID: #${depositId}\n\n⚠️ Auto-verification failed: ${verification.error}\nUse buttons below to manage:`,
-                    reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] }
-                });
-                delete userState[userId];
-                setTimeout(() => showMainMenu(ctx), 2000);
+                validation = await validatePlayerOnly(input);
             }
-            return;
-        } 
-        else if (state.orderPending) {
-            const existingApprovedOrder = await db.query(
-                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
-                [txId]
-            );
-            if (existingApprovedOrder.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                    "✅ This transaction was already verified! Your order has been processed.", { parse_mode: "HTML" });
-                delete userState[userId];
-                setTimeout(() => showMainMenu(ctx), 2000);
-                return;
+            
+            try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch(e) {}
+            
+            if (!validation || !validation.success) {
+                return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.\n\nType /cancel to cancel");
             }
-
-            const existingPendingOrder = await db.query(
-                "SELECT id FROM orders WHERE transaction_id = $1 AND status = 'PENDING'",
-                [txId]
-            );
-            if (existingPendingOrder.rows.length > 0) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, 
-                    "⚠️ This transaction ID is already pending review. Our team will process it shortly.", { parse_mode: "HTML" });
-                delete userState[userId];
-                return;
-            }
-
-            const orderId = state.orderId;
-            const order = (await db.query("SELECT * FROM orders WHERE id = $1", [orderId])).rows[0];
-            if (!order) {
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "❌ Order not found. Please contact support.", { parse_mode: "HTML" });
-                delete userState[userId];
-                return;
-            }
-
-            await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [txId, orderId]);
-
-            const provider = resolveShegerPayProvider(state.paymentMethodName) || "telebirr";
-            const normalizedMethodName = state.paymentMethodName?.toString().trim().toLowerCase() || "";
-            const methods = await getPaymentMethods();
-            const selectedMethod = methods.find(m => m.name.toString().trim().toLowerCase() === normalizedMethodName)
-                || methods.find(m => m.name.toString().trim().toLowerCase().includes(normalizedMethodName))
-                || methods.find(m => normalizedMethodName.includes(m.name.toString().trim().toLowerCase()));
-            const expectedRecipient = selectedMethod?.account_number || null;
-
-            const verification = await verifyPaymentWithTxId(provider, txId, order.price_etb, selectedMethod?.account_name, expectedRecipient);
-
-            if (verification.verified) {
-                await db.query(`UPDATE orders SET verified_by_shegerpay = true WHERE id = $1`, [orderId]);
-                if (order.delivery_type === "ragner" || order.product_type === "uc_instant") {
-                    const ragnerResult = await createOrder(order.external_product_id, order.player_id);
-                    if (ragnerResult && ragnerResult.success) {
-                        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "🎮 UC Delivered Successfully! (Payment auto-verified)", { parse_mode: "HTML" });
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Order #${orderId} auto-verified and auto-completed (Instant product)\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`);
-                    } else {
-                        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                        await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Delivery in progress. You will be notified when completed.", { parse_mode: "HTML" });
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, `🟡 Order #${orderId} payment auto-verified, but instant delivery failed. Please complete manually.\nUser: @${ctx.from.username || userId}\nProduct: ${order.product_name}\nAmount: ${order.price_etb} ETB\nTransaction ID: ${txId}`, {
-                            reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
-                        });
-                    }
-                } else {
-                    await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                    await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "✅ Payment verified! Your order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-                    let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\nTransaction ID: ${txId}\n`;
-                    if (order.user_inputs) {
-                        const inputs = parseUserInputs(order.user_inputs);
-                        if (inputs) {
-                            if (inputs.player_id) adminMsg += `🎮 Player ID: ${inputs.player_id}\n`;
-                            if (inputs.email) adminMsg += `📧 Email: ${inputs.email}\n`;
-                            if (inputs.phone) adminMsg += `📱 Phone: ${inputs.phone}\n`;
-                            if (inputs.username) adminMsg += `👤 Username: ${inputs.username}\n`;
-                        }
-                    }
-                    adminMsg += `\n👇 Click "Complete" after manual delivery.`;
-                    await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                        caption: adminMsg,
-                        reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
-                    });
-                }
-            } else {
-                let caption = `📥 NEW PAYMENT RECEIVED (Manual review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${order.product_name}\n💰 Amount: ${order.price_etb} ETB\n🧾 Order ID: #${orderId}\nTransaction ID: ${txId}\n`;
-                if (order.user_inputs) {
-                    const inputs = parseUserInputs(order.user_inputs);
-                    if (inputs) {
-                        if (inputs.email) caption += `\n📧 Email: ${inputs.email}\n`;
-                        if (inputs.phone) caption += `📱 Phone: ${inputs.phone}\n`;
-                        if (inputs.username) caption += `👤 Username: ${inputs.username}\n`;
-                        if (inputs.player_id) caption += `🆔 Player ID: ${inputs.player_id}\n`;
-                    }
-                }
-                caption += `\n💳 Payment Method: ${state.paymentMethodName || "Bank Transfer"}\n⚠️ Auto-verification failed: ${verification.error}\n\nUse buttons below to manage:`;
-                await ctx.telegram.editMessageText(validatingMsg.chat.id, validatingMsg.message_id, null, "⚠️ Could not auto-verify. Our team will review your payment.", { parse_mode: "HTML" });
-                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, state.tempFileId, {
-                    caption: caption,
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
-                            [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
-                        ],
-                    },
-                });
-            }
-            delete userState[userId];
-            setTimeout(() => showMainMenu(ctx), 2000);
-            return;
+            state.playerName = validation.data?.nickname || "Unknown Player";
+        } catch (error) {
+            console.error("Validation error:", error);
+            return ctx.reply("⏳ Service busy. Please try again in 2 minutes.\n\nType /cancel to cancel");
         }
+        
+        state.step = "CONFIRM";
+        let confirmMessage = "✅ Verification Successful\n\n";
+        confirmMessage += `👤 Name: ${state.playerName}\n`;
+        confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
+        
+        return ctx.reply(confirmMessage, {
+            reply_markup: { 
+                inline_keyboard: [
+                    [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
+                    [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+                ] 
+            },
+        });
+    } else if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
+        return processFieldInput(ctx, product, state, input);
     }
-
-  // Handle player ID input
-if (!state || state.step !== "PLAYER") return;
-const input = ctx.message.text.trim();
-const product = state.product?.fullProduct;
-if (!input) return ctx.reply("❌ Invalid input. Please try again.\n\nType /cancel to cancel");
-
-// PUBG product types that need Ragner validation
-const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
-
-// Ragner instant products AND database PUBG products all need validation
-if (state.product?.type === "ragner" || pubgTypes.includes(state.product?.product_type)) {
-    state.playerId = input;
-    
-    // Validate player for ALL PUBG product types
-    try {
-        // Show "validating" message
-        const waitMsg = await ctx.reply("🔍 Verifying Player ID...");
-        
-        let validation;
-        // For instant products, use specific product ID; for manual products, use generic validation
-        if (state.product?.type === "ragner") {
-            validation = await validatePlayer(state.product.productId, input);
-        } else {
-            // For manual PUBG products, use generic product ID validation
-            validation = await validatePlayerOnly(input);
-        }
-        
-        // Delete the "validating" message
-        try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch(e) {}
-        
-        if (!validation || !validation.success) {
-            return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.\n\nType /cancel to cancel");
-        }
-        state.playerName = validation.data?.nickname || "Unknown Player";
-    } catch (error) {
-        console.error("Validation error:", error);
-        return ctx.reply("⏳ Service busy. Please try again in 2 minutes.\n\nType /cancel to cancel");
-    }
-    
-    state.step = "CONFIRM";
-    let confirmMessage = "✅ Verification Successful\n\n";
-    confirmMessage += `👤 Name: ${state.playerName}\n`;
-    confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
-    
-    return ctx.reply(confirmMessage, {
-        reply_markup: { 
-            inline_keyboard: [
-                [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
-                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
-            ] 
-        },
-    });
-} else if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
-    // If there are multiple fields (like TikTok), process them
-    return processFieldInput(ctx, product, state, input);
-}
 });
 
 // =====================
-// 🟢 PHOTO MESSAGE (Payment Screenshot) – ask for transaction ID
+// 🟢 PHOTO MESSAGE (Payment Screenshot) – Auto-extract TX ID with Cloud Vision
 // =====================
 bot.on("photo", async (ctx) => {
     const userId = ctx.from.id;
@@ -2039,14 +2071,147 @@ bot.on("photo", async (ctx) => {
 
         // ----- DEPOSIT FLOW -----
         if (state.step === "DEPOSIT_PAYMENT_WAITING" && state.depositAmount && state.depositMethod) {
-            console.log("💰 Deposit flow: storing tempFileId and transitioning to AWAITING_TX_ID");
-            userState[userId].tempFileId = fileId;
-            userState[userId].step = "AWAITING_TX_ID";
-            userState[userId].depositPending = true;
-            userState[userId].depositAmount = state.depositAmount;
-            userState[userId].depositMethod = state.depositMethod;
-            await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:\n\nType /cancel to cancel", { parse_mode: "HTML" });
-            return;
+            console.log("💰 Deposit flow: processing screenshot");
+            
+            const scanningMsg = await ctx.reply("🔍 Scanning payment receipt with Cloud Vision...", { parse_mode: "HTML" });
+            
+            const ocrResult = await extractTxIdFromImage(fileId);
+            const extractedTxId = ocrResult?.txId;
+            const ocrFullText = ocrResult?.fullText || "";
+            
+            if (extractedTxId) {
+                try {
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying with ShegerPay...`, { parse_mode: "HTML" });
+                } catch(e) {}
+                
+                const depositAmount = state.depositAmount;
+                const method = state.depositMethod;
+                const provider = resolveShegerPayProvider(method?.name) || "telebirr";
+                const expectedRecipient = method?.account_number || null;
+                
+                // For BOA, extract sender account and construct full receipt URL
+                let senderAccount = null;
+                let finalTxId = extractedTxId;
+                
+                if (provider === "boa") {
+                    senderAccount = extractSenderAccount(ocrFullText);
+                    console.log("BOA sender account:", senderAccount);
+                    
+                    // Try to find full URL in OCR text first
+                    const urlMatch = ocrFullText.match(/https?:\/\/cs\.bankofabyssinia\.com\/[^\s]+/i);
+                    if (urlMatch) {
+                        finalTxId = urlMatch[0];
+                        console.log("✅ Found BOA receipt URL:", finalTxId);
+                    } else if (!extractedTxId.startsWith("http")) {
+                        // Construct URL from FT reference
+                        finalTxId = `https://cs.bankofabyssinia.com/slip/?trx=${extractedTxId}`;
+                        console.log("🔧 Constructed BOA receipt URL:", finalTxId);
+                    }
+                }
+                
+                const verification = await verifyPaymentWithTxId(provider, finalTxId, depositAmount, method.account_name, expectedRecipient, senderAccount);
+                
+                if (verification.verified) {
+                    const result = await db.query(
+                        `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
+                         VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
+                        [userId, depositAmount, method.name, fileId, extractedTxId]
+                    );
+                    const depositId = result.rows[0].id;
+                    await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${extractedTxId})`);
+                    
+                    try {
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            `✅ Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
+                    } catch(e) {
+                        await ctx.reply(`✅ Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
+                    }
+                    
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                        `✅ Auto-verified deposit #${depositId} (Cloud Vision OCR)\n` +
+                        `User: @${ctx.from.username || userId}\n` +
+                        `Amount: ${depositAmount} ETB\n` +
+                        `Method: ${method.name}\n` +
+                        `Transaction ID: ${extractedTxId}`
+                    );
+                    
+                    delete userState[userId];
+                    setTimeout(() => showMainMenu(ctx), 2000);
+                    return;
+                } else {
+                    // Verification failed - send to admin for manual review
+                    try {
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            "⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                    } catch(e) {
+                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                    }
+                    
+                    const depositResult = await db.query(
+                        `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status)
+                         VALUES ($1, $2, $3, $4, 'PENDING') RETURNING id`,
+                        [userId, state.depositAmount, state.depositMethod.name, fileId]
+                    );
+                    const depositId = depositResult.rows[0].id;
+                    
+                    await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
+                        caption: `💰 NEW DEPOSIT (Manual Review - OCR found: ${extractedTxId})\n\n` +
+                            `👤 User: @${ctx.from.username || userId}\n` +
+                            `💰 Amount: ${state.depositAmount} ETB\n` +
+                            `💳 Method: ${state.depositMethod.name}\n` +
+                            `🧾 Request ID: #${depositId}\n` +
+                            (provider === "boa" ? `🔗 BOA URL sent: ${finalTxId}\n` : '') +
+                            `❌ Error: ${verification.error}\n\n` +
+                            `Use buttons below to manage:`,
+                        reply_markup: { 
+                            inline_keyboard: [[
+                                { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, 
+                                { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }
+                            ]] 
+                        }
+                    });
+                    
+                    delete userState[userId];
+                    setTimeout(() => showMainMenu(ctx), 3000);
+                    return;
+                }
+            } else {
+                // No TX ID found - send to admin for manual review
+                try {
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        "⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                } catch(e) {
+                    await ctx.reply("⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
+                }
+                
+                // Create deposit request and send to admin
+                const depositResult = await db.query(
+                    `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status)
+                     VALUES ($1, $2, $3, $4, 'PENDING') RETURNING id`,
+                    [userId, state.depositAmount, state.depositMethod.name, fileId]
+                );
+                const depositId = depositResult.rows[0].id;
+                
+                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
+                    caption: `💰 NEW DEPOSIT (Manual Review - Couldn't read TX ID)\n\n` +
+                        `👤 User: @${ctx.from.username || userId}\n` +
+                        `💰 Amount: ${state.depositAmount} ETB\n` +
+                        `💳 Method: ${state.depositMethod.name}\n` +
+                        `🧾 Request ID: #${depositId}\n` +
+                        `📝 Please verify and manage manually.`,
+                    reply_markup: { 
+                        inline_keyboard: [[
+                            { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, 
+                            { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }
+                        ]] 
+                    }
+                });
+                
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 3000);
+                return;
+            }
         }
 
         // ----- BANK TRANSFER PRODUCT FLOW -----
@@ -2054,13 +2219,14 @@ bot.on("photo", async (ctx) => {
             const product = state.productInfo;
             console.log("Processing product order:", JSON.stringify(product, null, 2));
 
-            let userInputs = {};
+            const scanningMsg = await ctx.reply("🔍 Scanning payment receipt...", { parse_mode: "HTML" });
+            
             let extractedPlayerId = null, extractedPlayerName = null;
+            let userInputs = {};
             if (state.collectedData) {
                 userInputs = state.collectedData;
                 if (state.collectedData.player_id) {
                     extractedPlayerId = state.collectedData.player_id;
-                    extractedPlayerName = state.collectedData.player_name || null;
                 }
             }
             if (state.playerId && !extractedPlayerId) {
@@ -2100,15 +2266,196 @@ bot.on("photo", async (ctx) => {
             );
             const orderId = result.rows[0].id;
 
-            userState[userId].orderId = orderId;
-            userState[userId].tempFileId = fileId;
-            userState[userId].step = "AWAITING_TX_ID";
-            userState[userId].orderPending = true;
-            userState[userId].paymentMethodName = state.paymentMethod?.name || "Bank Transfer";
-            userState[userId].productInfo = product;
+            const ocrResult = await extractTxIdFromImage(fileId);
+            const extractedTxId = ocrResult?.txId;
+            const ocrFullText = ocrResult?.fullText || "";
+            
+            if (extractedTxId) {
+                try {
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying payment...`, { parse_mode: "HTML" });
+                } catch(e) {}
+                
+                const provider = resolveShegerPayProvider(state.paymentMethod?.name) || "telebirr";
+                const method = state.paymentMethod;
+                const expectedRecipient = method?.account_number || null;
+                
+                // For BOA, extract sender account and construct full receipt URL
+                let senderAccount = null;
+                let finalTxId = extractedTxId;
+                
+                if (provider === "boa") {
+                    senderAccount = extractSenderAccount(ocrFullText);
+                    console.log("BOA sender account:", senderAccount);
+                    
+                    // Try to find full URL in OCR text first
+                    const urlMatch = ocrFullText.match(/https?:\/\/cs\.bankofabyssinia\.com\/[^\s]+/i);
+                    if (urlMatch) {
+                        finalTxId = urlMatch[0];
+                        console.log("✅ Found BOA receipt URL:", finalTxId);
+                    } else if (!extractedTxId.startsWith("http")) {
+                        // Construct URL from FT reference
+                        finalTxId = `https://cs.bankofabyssinia.com/slip/?trx=${extractedTxId}`;
+                        console.log("🔧 Constructed BOA receipt URL:", finalTxId);
+                    }
+                }
+                
+                const verification = await verifyPaymentWithTxId(provider, finalTxId, product.price, method?.account_name, expectedRecipient, senderAccount);
+                
+                if (verification.verified) {
+                    await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
+                    
+                    const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
+                    
+                    if (isInstant) {
+                        try {
+                            const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                            if (ragnerResult && ragnerResult.success) {
+                                await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                        "🎮 UC Delivered Successfully! (Payment auto-verified via OCR)", { parse_mode: "HTML" });
+                                } catch(e) {}
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                                    `✅ Order #${orderId} auto-completed (Cloud Vision OCR)\n` +
+                                    `User: @${ctx.from.username || userId}\n` +
+                                    `Product: ${product.name}\n` +
+                                    `Amount: ${product.price} ETB\n` +
+                                    `TX ID: ${extractedTxId}`
+                                );
+                            } else {
+                                await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                        "✅ Payment verified!\n\nAuto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
+                                } catch(e) {}
+                                
+                                // Send admin notification for manual delivery
+                                let adminMsg = `🟡 Order #${orderId} payment verified but auto-delivery failed\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                                if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                                if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                                adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                                
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                                    reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                                });
+                            }
+                        } catch(ragnerError) {
+                            await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                            try {
+                                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                    "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
+                            } catch(e) {}
+                            
+                            // Send admin notification
+                            let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                            if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                            adminMsg += `\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
+                            
+                            await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                                reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                            });
+                        }
+                    } else {
+                        // Manual product - auto approved
+                        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                        try {
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
+                        } catch(e) {}
+                        
+                        // Send admin notification with Player ID/Name
+                        let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                        if (extractedPlayerId) {
+                            adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                        }
+                        adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                        
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                            reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                        });
+                    }
+                    
+                    delete userState[userId];
+                    setTimeout(() => showMainMenu(ctx), 3000);
+                    return;
+                } else {
+                    // Verification failed - send to admin for manual review
+                    try {
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            "⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                    } catch(e) {
+                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                    }
+                    
+                    let adminCaption = `📥 NEW ORDER (Manual Review)\n\n` +
+                        `👤 User: @${ctx.from.username || userId}\n` +
+                        `📦 Product: ${product.name}\n` +
+                        `💰 Amount: ${product.price} ETB\n` +
+                        `🧾 Order ID: #${orderId}\n` +
+                        `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
+                        `🔍 OCR TX ID: ${extractedTxId}\n` +
+                        (provider === "boa" ? `🔗 BOA URL: ${finalTxId}\n` : '') +
+                        `❌ Error: ${verification.error}\n`;
 
-            await ctx.reply("📝 Please enter the transaction ID (reference number) from your payment receipt:\n\nType /cancel to cancel", { parse_mode: "HTML" });
-            return;
+                    if (extractedPlayerId) {
+                        adminCaption += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                        if (extractedPlayerName) adminCaption += `👤 Player Name: ${extractedPlayerName}\n`;
+                    }
+
+                    adminCaption += `\nUse buttons below to manage:`;
+
+                    await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
+                        caption: adminCaption,
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
+                                [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
+                            ],
+                        },
+                    });
+                    
+                    delete userState[userId];
+                    setTimeout(() => showMainMenu(ctx), 3000);
+                    return;
+                }
+            } else {
+                // No TX ID found - send to admin
+                try {
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        "⚠️ Could not read transaction ID from image.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                } catch(e) {}
+                
+                let adminCaption = `📥 NEW ORDER (Manual Review - Couldn't read TX ID)\n\n` +
+                    `👤 User: @${ctx.from.username || userId}\n` +
+                    `📦 Product: ${product.name}\n` +
+                    `💰 Amount: ${product.price} ETB\n` +
+                    `🧾 Order ID: #${orderId}\n` +
+                    `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n`;
+                
+                if (extractedPlayerId) {
+                    adminCaption += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                    if (extractedPlayerName) adminCaption += `👤 Player Name: ${extractedPlayerName}\n`;
+                }
+                
+                adminCaption += `\nUse buttons below to manage:`;
+                
+                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
+                    caption: adminCaption,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }],
+                            [{ text: "🎮 Complete", callback_data: `complete_${orderId}` }],
+                        ],
+                    },
+                });
+                
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 3000);
+                return;
+            }
         }
         
         console.log("❌ Unhandled state in photo handler");
