@@ -23,6 +23,8 @@ A powerful Telegram bot for selling in-game credits, digital products, and manag
 - [How It Works](#how-it-works)
 - [Contributing](#contributing)
 - [Support](#support)
+- [Live Demo](#live-demo)
+- [Author](#author)
 
 ## ✨ Features
 
@@ -426,4 +428,5 @@ Admin Dashboard: https://natan-topup-bot-production.up.railway.app/
 ## Author
 
 Samuel Tesfaye - https://github.com/samua962
+
 Email - samueltesfaye228@gmail.com

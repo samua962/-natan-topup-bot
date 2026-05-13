@@ -2343,6 +2343,7 @@ if (verification.data?.timestamp) {
         }
 
         // ----- BANK TRANSFER PRODUCT FLOW -----
+             // ----- BANK TRANSFER PRODUCT FLOW -----
         if (state.step === "PAY" && state.productInfo) {
             const product = state.productInfo;
             console.log("Processing product order:", JSON.stringify(product, null, 2));
@@ -2408,58 +2409,170 @@ if (verification.data?.timestamp) {
                 const method = state.paymentMethod;
                 const expectedRecipient = method?.account_number || null;
                 
-                // Extract TX ID and construct full receipt URL for BOA
-                let senderAccount = null;
-                let finalTxId = extractedTxId;
+                // For BOA, skip auto-verify and ask for sender account
+                if (provider === "boa") {
+                    userState[userId].extractedTxId = extractedTxId;
+                    userState[userId].ocrFullText = ocrFullText;
+                    userState[userId].boapaymentFileId = fileId;
+                    userState[userId].orderId = orderId;
+                    userState[userId].step = "AWAITING_BOA_SENDER_ACCOUNT";
+                    
+                    try {
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            "🏦 Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\n📝 For BOA verification, please enter your **full account number** (sender account).\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
+                    } catch(e) {
+                        await ctx.reply("🏦 Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\n📝 For BOA verification, please enter your **full account number** (sender account).\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
+                    }
+                    return;
+                }
                 
-                const verification = await verifyPaymentWithTxId(provider, finalTxId, product.price, method?.account_name, expectedRecipient, senderAccount);
+                // For non-BOA providers, verify with ShegerPay
+                const verification = await verifyPaymentWithTxId(provider, extractedTxId, product.price, method?.account_name, expectedRecipient);
                 
-                 // ============ FIX 2: Check transaction timestamp (not older than order creation) ============
-if (verification.data?.timestamp) {
-    const txTime = parseShegerTimestamp(verification.data.timestamp);
-    const now = new Date();
-    
-    if (!txTime || isNaN(txTime.getTime())) {
-        console.error("❌ Could not parse timestamp, sending to manual review");
-    } else {
-        // Get the order creation time from the database
-        const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
-        const orderCreatedAt = orderResult.rows[0]?.created_at;
-        
-        if (orderCreatedAt && txTime < new Date(orderCreatedAt)) {
-            const diffMinutes = Math.round((new Date(orderCreatedAt) - txTime) / (1000 * 60));
-            console.log(`❌ Transaction is older than order: ${diffMinutes} minutes before order created`);
-            
-            await db.query(`UPDATE orders SET status='REJECTED', note='Payment made ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
-            
-            try {
-                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                    `❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
-            }
-            
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
-                `⚠️ OLD TRANSACTION REJECTED (Order)\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Product: ${product.name}\n` +
-                `Amount: ${product.price} ETB\n` +
-                `Order ID: #${orderId}\n` +
-                `TX ID: ${extractedTxId}\n` +
-                `Transaction time: ${verification.data.timestamp}\n` +
-                `Payment was ${diffMinutes} minutes BEFORE order created`
-            );
-            
-            delete userState[userId];
-            return;
-        }
-        
-        const diffMinutes = Math.round((now - txTime) / (1000 * 60));
-        console.log(`✅ Transaction timestamp valid: ${diffMinutes} minutes ago (after order created)`);
-    }
-} else {
-                    // Verification failed - send to admin for manual review
-                    // Verification failed - send to admin for manual review
+                if (verification.verified) {
+                    // ============ FIX 1: Check for duplicate transaction ============
+                    const existingApprovedDeposit = await db.query(
+                        "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
+                        [extractedTxId]
+                    );
+                    const existingApprovedOrder = await db.query(
+                        "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
+                        [extractedTxId]
+                    );
+                    
+                    if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
+                        await db.query(`UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1`, [orderId]);
+                        try {
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                        } catch(e) {
+                            await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                        }
+                        delete userState[userId];
+                        return;
+                    }
+                    
+                    // ============ FIX 2: Check transaction timestamp ============
+                    if (verification.data?.timestamp) {
+                        const txTime = parseShegerTimestamp(verification.data.timestamp);
+                        const now = new Date();
+                        
+                        if (txTime && !isNaN(txTime.getTime())) {
+                            const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
+                            const orderCreatedAt = orderResult.rows[0]?.created_at;
+                            
+                            if (orderCreatedAt && txTime < new Date(orderCreatedAt)) {
+                                const diffMinutes = Math.round((new Date(orderCreatedAt) - txTime) / (1000 * 60));
+                                console.log(`❌ Transaction is older than order: ${diffMinutes} minutes before order created`);
+                                
+                                await db.query(`UPDATE orders SET status='REJECTED', note='Payment made ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
+                                
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                        `❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
+                                } catch(e) {
+                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
+                                }
+                                
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                                    `⚠️ OLD TRANSACTION REJECTED (Order)\n` +
+                                    `User: @${ctx.from.username || userId}\n` +
+                                    `Product: ${product.name}\n` +
+                                    `Amount: ${product.price} ETB\n` +
+                                    `Order ID: #${orderId}\n` +
+                                    `TX ID: ${extractedTxId}\n` +
+                                    `Transaction time: ${verification.data.timestamp}\n` +
+                                    `Payment was ${diffMinutes} minutes BEFORE order created`
+                                );
+                                
+                                delete userState[userId];
+                                return;
+                            }
+                            
+                            const diffMinutes = Math.round((now - txTime) / (1000 * 60));
+                            console.log(`✅ Transaction timestamp valid: ${diffMinutes} minutes ago (after order created)`);
+                        }
+                    }
+                    
+                    // All checks passed - APPROVE
+                    await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
+                    
+                    const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
+                    
+                    if (isInstant) {
+                        try {
+                            const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                            if (ragnerResult && ragnerResult.success) {
+                                await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                        "🎮 UC Delivered Successfully! (Payment auto-verified via OCR)", { parse_mode: "HTML" });
+                                } catch(e) {}
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                                    `✅ Order #${orderId} auto-completed (Cloud Vision OCR)\n` +
+                                    `User: @${ctx.from.username || userId}\n` +
+                                    `Product: ${product.name}\n` +
+                                    `Amount: ${product.price} ETB\n` +
+                                    `TX ID: ${extractedTxId}`
+                                );
+                            } else {
+                                await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                        "✅ Payment verified!\n\nAuto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
+                                } catch(e) {}
+                                
+                                let adminMsg = `🟡 Order #${orderId} payment verified but auto-delivery failed\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                                if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                                if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                                adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                                
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                                    reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                                });
+                            }
+                        } catch(ragnerError) {
+                            await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                            try {
+                                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                    "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
+                            } catch(e) {}
+                            
+                            let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                            if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                            adminMsg += `\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
+                            
+                            await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                                reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                            });
+                        }
+                    } else {
+                        // Manual product - auto approved
+                        await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+                        try {
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
+                        } catch(e) {}
+                        
+                        let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
+                        if (extractedPlayerId) {
+                            adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
+                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
+                        }
+                        adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                        
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
+                            reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
+                        });
+                    }
+                    
+                    delete userState[userId];
+                    setTimeout(() => showMainMenu(ctx), 3000);
+                    return;
+                    
+                } else {
+                    // Verification FAILED - send to admin for manual review
                     try {
                         await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
                             "⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
@@ -2467,7 +2580,6 @@ if (verification.data?.timestamp) {
                         await ctx.reply("⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
                     }
                     
-                    // Update order with the transaction ID found
                     await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [extractedTxId, orderId]);
                     
                     let adminCaption = `📥 NEW ORDER (Manual Review)\n\n` +
@@ -2477,7 +2589,6 @@ if (verification.data?.timestamp) {
                         `🧾 Order ID: #${orderId}\n` +
                         `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
                         `🔍 OCR TX ID: ${extractedTxId}\n` +
-                        (provider === "boa" ? `🔗 BOA URL: ${finalTxId}\n` : '') +
                         `❌ Error: ${verification.error}\n`;
 
                     if (extractedPlayerId) {
