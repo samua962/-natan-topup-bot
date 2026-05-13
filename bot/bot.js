@@ -2430,6 +2430,8 @@ if (verification.data?.timestamp) {
                 const verification = await verifyPaymentWithTxId(provider, extractedTxId, product.price, method?.account_name, expectedRecipient);
                 
                 if (verification.verified) {
+                    console.log("✅ ShegerPay verification passed!");
+    console.log("🕐 Timestamp from ShegerPay:", verification.data?.timestamp);
                     // ============ FIX 1: Check for duplicate transaction ============
                     const existingApprovedDeposit = await db.query(
                         "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
@@ -2452,47 +2454,57 @@ if (verification.data?.timestamp) {
                         return;
                     }
                     
-                    // ============ FIX 2: Check transaction timestamp ============
-                    if (verification.data?.timestamp) {
-                        const txTime = parseShegerTimestamp(verification.data.timestamp);
-                        const now = new Date();
-                        
-                        if (txTime && !isNaN(txTime.getTime())) {
-                            const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
-                            const orderCreatedAt = orderResult.rows[0]?.created_at;
-                            
-                            if (orderCreatedAt && txTime < new Date(orderCreatedAt)) {
-                                const diffMinutes = Math.round((new Date(orderCreatedAt) - txTime) / (1000 * 60));
-                                console.log(`❌ Transaction is older than order: ${diffMinutes} minutes before order created`);
-                                
-                                await db.query(`UPDATE orders SET status='REJECTED', note='Payment made ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
-                                
-                                try {
-                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                                        `❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
-                                } catch(e) {
-                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order was created.\n\nPlease make a NEW payment AFTER placing your order.\n\nTransactions made before the order cannot be accepted.`, { parse_mode: "HTML" });
-                                }
-                                
-                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
-                                    `⚠️ OLD TRANSACTION REJECTED (Order)\n` +
-                                    `User: @${ctx.from.username || userId}\n` +
-                                    `Product: ${product.name}\n` +
-                                    `Amount: ${product.price} ETB\n` +
-                                    `Order ID: #${orderId}\n` +
-                                    `TX ID: ${extractedTxId}\n` +
-                                    `Transaction time: ${verification.data.timestamp}\n` +
-                                    `Payment was ${diffMinutes} minutes BEFORE order created`
-                                );
-                                
-                                delete userState[userId];
-                                return;
-                            }
-                            
-                            const diffMinutes = Math.round((now - txTime) / (1000 * 60));
-                            console.log(`✅ Transaction timestamp valid: ${diffMinutes} minutes ago (after order created)`);
-                        }
-                    }
+    // ============ FIX 2: Check transaction timestamp ============
+if (verification.data?.timestamp) {
+    const txTime = parseShegerTimestamp(verification.data.timestamp);
+    
+    if (txTime && !isNaN(txTime.getTime())) {
+        // Get the order creation time
+        const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
+        const orderCreatedAt = new Date(orderResult.rows[0]?.created_at);
+        const now = new Date();
+        
+        console.log("🕐 TX Time:", txTime.toISOString());
+        console.log("🕐 Order Created:", orderCreatedAt.toISOString());
+        console.log("🕐 Current Time:", now.toISOString());
+        
+        // REJECT if transaction is OLDER than 10 minutes before order creation
+        const tenMinutesBeforeOrder = new Date(orderCreatedAt.getTime() - 10 * 60 * 1000);
+        
+        if (txTime < tenMinutesBeforeOrder) {
+            const diffMinutes = Math.round((orderCreatedAt - txTime) / (1000 * 60));
+            console.log(`❌ OLD TRANSACTION: Payment was ${diffMinutes} minutes before order`);
+            
+            await db.query(`UPDATE orders SET status='REJECTED', note='Old payment: ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
+            
+            try {
+                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                    `❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
+            } catch(e) {
+                await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
+            }
+            
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                `⚠️ OLD TRANSACTION REJECTED\n` +
+                `User: @${ctx.from.username || userId}\n` +
+                `Product: ${product.name}\n` +
+                `Amount: ${product.price} ETB\n` +
+                `Order #${orderId}\n` +
+                `TX ID: ${extractedTxId}\n` +
+                `TX Time: ${verification.data.timestamp}\n` +
+                `Order Time: ${orderCreatedAt.toISOString()}\n` +
+                `Difference: ${diffMinutes} minutes`
+            );
+            
+            delete userState[userId];
+            return;
+        }
+        
+        console.log(`✅ Transaction accepted - within 10 min window`);
+    }
+} else {
+        console.log("⚠️ No timestamp in verification data - accepting anyway");
+    }
                     
                     // All checks passed - APPROVE
                     await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
@@ -2573,11 +2585,12 @@ if (verification.data?.timestamp) {
                     
                 } else {
                     // Verification FAILED - send to admin for manual review
+                    const manualReviewMessage = `⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review.\nError: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
                     try {
                         await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                            "⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                            manualReviewMessage, { parse_mode: "HTML" });
                     } catch(e) {
-                        await ctx.reply("⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
+                        await ctx.reply(manualReviewMessage, { parse_mode: "HTML" });
                     }
                     
                     await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [extractedTxId, orderId]);
