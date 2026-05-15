@@ -892,9 +892,8 @@ async function showDatabaseProducts(ctx, subId) {
             const catResult = await db.query("SELECT image_url FROM categories WHERE id = $1", [subcategory.category_id]);
             displayImage = catResult.rows[0]?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         }
-        const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው ።\n\nየሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው ።\n\n";
-        const caption = `${workingHoursNote}${title}`;
-        await safeEditMedia(ctx, displayImage, caption, buttons);
+        
+        await safeEditMedia(ctx, displayImage, title, buttons);
         
     } catch (error) {
         console.error("Database products error:", error);
@@ -1594,10 +1593,8 @@ async function showProductsByCategory(ctx, categoryId) {
         if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
         
         const categoryImage = category?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-        const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው።\n\n  የሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው።\n\n";
-        const caption = `${workingHoursNote}${title}`;
         
-        await safeEditMedia(ctx, categoryImage, caption, buttons);
+        await safeEditMedia(ctx, categoryImage, title, buttons);
     } catch (error) {
         console.error("Products by category error:", error);
         await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
@@ -3085,36 +3082,6 @@ if (verification.data?.timestamp) {
                     return;
                     
                 } else {
-                    const duplicateFromShegerPay =
-                        verification.details?.already_verified === true ||
-                        verification.details?.error_code === "TX_003" ||
-                        /already verified before|transaction cannot be used again|already been used/i.test(verification.error || "");
-
-                    if (duplicateFromShegerPay) {
-                        await db.query(`UPDATE orders SET status='REJECTED', transaction_id=$1, note='Duplicate transaction' WHERE id=$2`, [extractedTxId, orderId]);
-                        const duplicateMessage = "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.";
-
-                        try {
-                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                duplicateMessage, { parse_mode: "HTML" });
-                        } catch(e) {
-                            await ctx.reply(duplicateMessage, { parse_mode: "HTML" });
-                        }
-
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                            `⚠️ DUPLICATE TRANSACTION REJECTED\n\n` +
-                            `👤 User: @${ctx.from.username || userId}\n` +
-                            `📦 Product: ${product.name}\n` +
-                            `💰 Amount: ${product.price} ETB\n` +
-                            `🧾 Order ID: #${orderId}\n` +
-                            `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
-                            `🔍 TX ID: ${extractedTxId}`
-                        );
-
-                        delete userState[userId];
-                        setTimeout(() => showMainMenu(ctx), 3000);
-                        return;
-                    }
                     // Verification FAILED - send to admin for manual review
                     const manualReviewMessage = `⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review.\nError: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
                     try {

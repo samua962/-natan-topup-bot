@@ -103,19 +103,8 @@ function parseShegerTimestamp(timestampStr) {
                 return date;
             }
         }
-        // Format 4: "DD/MM/YY HH:MM" or "DD/MM/YYYY HH:MM" (BOA)
-        // Example: "10/05/26 22:02" = 10 May 2026
-        if (/^\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?$/.test(timestampStr)) {
-            const match = timestampStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-            if (match) {
-                let [, day, month, year, hour, minute, second = '0'] = match;
-                year = year.length === 2 ? `20${year}` : year;
-                const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
-                console.log("Parsed as DD/MM/YY HH:MM:", date);
-                return date;
-            }
-        }
-        // Format 5: Try JavaScript's Date.parse as fallback
+        
+        // Format 4: Try JavaScript's Date.parse as fallback
         const jsDate = new Date(timestampStr);
         if (!isNaN(jsDate.getTime())) {
             console.log("✅ Parsed with JavaScript Date:", jsDate);
@@ -201,21 +190,13 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
             }
 
             if (expectedRecipientAccount) {
-                const fullMerchantAccount = String(expectedRecipientAccount).replace(/\D/g, "");
-                const maskedAccount = String(data.credited_party_account || data.receiver_account || "");
+                const fullMerchantAccount = String(expectedRecipientAccount).replace(/\s/g, "");
+                const maskedAccount = data.credited_party_account;
                 if (maskedAccount) {
-                    const visibleSuffix = maskedAccount.match(/(\d+)$/)?.[1] || "";
                     const merchantLast4 = fullMerchantAccount.slice(-4);
-
-                    if (visibleSuffix && !fullMerchantAccount.endsWith(visibleSuffix)) {
-                        return { verified: false, error: `Payment was sent to account ending with ${visibleSuffix}, but our account ends with ${merchantLast4}. Please check the account number.`, details: data };
-                    }
-
-                    if (!visibleSuffix) {
-                        const maskedLast4 = maskedAccount.slice(-4);
-                        if (merchantLast4 !== maskedLast4) {
-                            return { verified: false, error: `Payment was sent to account ending with ${maskedLast4}, but our account ends with ${merchantLast4}. Please check the account number.`, details: data };
-                        }
+                    const maskedLast4 = maskedAccount.slice(-4);
+                    if (merchantLast4 !== maskedLast4) {
+                        return { verified: false, error: `Payment was sent to account ending with ${maskedLast4}, but our account ends with ${merchantLast4}. Please check the account number.`, details: data };
                     }
                 }
             }
@@ -892,9 +873,8 @@ async function showDatabaseProducts(ctx, subId) {
             const catResult = await db.query("SELECT image_url FROM categories WHERE id = $1", [subcategory.category_id]);
             displayImage = catResult.rows[0]?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         }
-        const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው ።\n\nየሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው ።\n\n";
-        const caption = `${workingHoursNote}${title}`;
-        await safeEditMedia(ctx, displayImage, caption, buttons);
+        
+        await safeEditMedia(ctx, displayImage, title, buttons);
         
     } catch (error) {
         console.error("Database products error:", error);
@@ -1594,10 +1574,8 @@ async function showProductsByCategory(ctx, categoryId) {
         if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
         
         const categoryImage = category?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
-        const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው።\n\n  የሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው።\n\n";
-        const caption = `${workingHoursNote}${title}`;
         
-        await safeEditMedia(ctx, categoryImage, caption, buttons);
+        await safeEditMedia(ctx, categoryImage, title, buttons);
     } catch (error) {
         console.error("Products by category error:", error);
         await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
@@ -2152,423 +2130,6 @@ bot.on("text", async (ctx) => {
         await ctx.reply("❌ Order Cancelled.", { parse_mode: "HTML" });
         return showMainMenu(ctx);
     }
-    // Handle BOA sender account for wallet deposit verification.
-    if (state?.step === "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT") {
-        const senderAccount = text.trim().replace(/\s/g, "");
-
-        if (!/^[0-9*_-]{6,30}$/.test(senderAccount)) {
-            return ctx.reply("Invalid BOA sender account. Please send your full sender account number.\n\nType /cancel to cancel", { parse_mode: "HTML" });
-        }
-
-        const depositAmount = state.depositAmount;
-        const method = state.depositMethod;
-        const extractedTxId = state.extractedTxId;
-        const fileId = state.depositPaymentFileId || state.paymentFileId;
-
-        if (!depositAmount || !method || !extractedTxId || !fileId) {
-            console.error("Missing BOA deposit verification state:", state);
-            delete userState[userId];
-            return ctx.reply("Could not continue BOA deposit verification. Please start the deposit again.", { parse_mode: "HTML" });
-        }
-
-        const verifyingMsg = await ctx.reply("Verifying BOA deposit with ShegerPay...", { parse_mode: "HTML" });
-        const verification = await verifyPaymentWithTxId("boa", extractedTxId, depositAmount, method.account_name, method?.account_number || null, senderAccount);
-
-        if (verification.verified) {
-            const existingApprovedDeposit = await db.query(
-                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-                [extractedTxId]
-            );
-            const existingApprovedOrder = await db.query(
-                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
-                [extractedTxId]
-            );
-
-            if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
-                try {
-                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                        "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-                } catch(e) {
-                    await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-                }
-                delete userState[userId];
-                return;
-            }
-
-            if (verification.data?.timestamp) {
-                const txTime = parseShegerTimestamp(verification.data.timestamp);
-                const now = new Date();
-
-                if (txTime && !isNaN(txTime.getTime())) {
-                    const requestTime = new Date();
-                    if (txTime < requestTime) {
-                        const diffMinutes = Math.round((requestTime - txTime) / (1000 * 60));
-                        try {
-                            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                                `This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
-                        } catch(e) {
-                            await ctx.reply(`This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
-                        }
-
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                            `OLD BOA TRANSACTION REJECTED (Deposit)\n` +
-                            `User: @${ctx.from.username || userId}\n` +
-                            `Amount: ${depositAmount} ETB\n` +
-                            `Method: ${method.name}\n` +
-                            `TX ID: ${extractedTxId}\n` +
-                            `Sender Account: ${senderAccount}\n` +
-                            `Transaction time: ${verification.data.timestamp}\n` +
-                            `Payment was ${diffMinutes} minutes BEFORE deposit request`
-                        );
-
-                        delete userState[userId];
-                        return;
-                    }
-
-                    const diffMinutes = Math.round((now - txTime) / (1000 * 60));
-                    console.log(`BOA deposit transaction timestamp valid: ${diffMinutes} minutes ago`);
-                }
-            }
-
-            const result = await db.query(
-                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-                 VALUES ($1, $2, $3, $4, 'APPROVED', CURRENT_TIMESTAMP, $5) RETURNING id`,
-                [userId, depositAmount, method.name, fileId, extractedTxId]
-            );
-            const depositId = result.rows[0].id;
-            await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${extractedTxId})`);
-
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    `Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(`Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
-            }
-
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                `Auto-verified BOA deposit #${depositId}\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Amount: ${depositAmount} ETB\n` +
-                `Method: ${method.name}\n` +
-                `Transaction ID: ${extractedTxId}\n` +
-                `Sender Account: ${senderAccount}\n` +
-                `Timestamp: ${verification.data?.timestamp || 'N/A'}`
-            );
-
-            delete userState[userId];
-            setTimeout(() => showMainMenu(ctx), 2000);
-            return;
-        }
-
-        const oldTransactionError = /too old|old transaction|recent payment/i.test(verification.error || "");
-        if (oldTransactionError) {
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    `${verification.error}\n\nPlease make a NEW payment after creating your deposit request.`, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(`${verification.error}\n\nPlease make a NEW payment after creating your deposit request.`, { parse_mode: "HTML" });
-            }
-
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                `OLD BOA DEPOSIT REJECTED\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Amount: ${depositAmount} ETB\n` +
-                `Method: ${method.name}\n` +
-                `TX ID: ${extractedTxId}\n` +
-                `Sender Account: ${senderAccount}\n` +
-                `Error: ${verification.error}`
-            );
-
-            delete userState[userId];
-            setTimeout(() => showMainMenu(ctx), 3000);
-            return;
-        }
-
-        try {
-            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                "Could not verify BOA deposit automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
-        } catch(e) {
-            await ctx.reply("Could not verify BOA deposit automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
-        }
-
-        const depositResult = await db.query(
-            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-             VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
-            [userId, depositAmount, method.name, fileId, extractedTxId]
-        );
-        const depositId = depositResult.rows[0].id;
-
-        await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
-            caption: `NEW BOA DEPOSIT (Manual Review - OCR found: ${extractedTxId})\n\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Amount: ${depositAmount} ETB\n` +
-                `Method: ${method.name}\n` +
-                `Request ID: #${depositId}\n` +
-                `Sender Account: ${senderAccount}\n` +
-                `Error: ${verification.error}\n\n` +
-                `Use buttons below to manage:`,
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "Approve", callback_data: `approve_deposit_${depositId}` },
-                    { text: "Reject", callback_data: `reject_deposit_${depositId}` }
-                ]]
-            }
-        });
-
-        delete userState[userId];
-        setTimeout(() => showMainMenu(ctx), 3000);
-        return;
-    }
-    // Handle BOA sender account after OCR extracted the transaction ID.
-    if (state?.step === "AWAITING_BOA_SENDER_ACCOUNT") {
-        const senderAccount = text.trim().replace(/\s/g, "");
-
-        if (!/^[0-9*_-]{6,30}$/.test(senderAccount)) {
-            return ctx.reply("Invalid BOA sender account. Please send your full sender account number.\n\nType /cancel to cancel", { parse_mode: "HTML" });
-        }
-
-        const product = state.productInfo || state.product?.fullProduct;
-        const method = state.paymentMethod;
-        const extractedTxId = state.extractedTxId;
-        const orderId = state.orderId;
-        const fileId = state.boapaymentFileId || state.paymentFileId;
-
-        if (!product || !method || !extractedTxId || !orderId) {
-            console.error("Missing BOA verification state:", state);
-            delete userState[userId];
-            return ctx.reply("⚠️ Could not continue BOA verification. Please start the order again.", { parse_mode: "HTML" });
-        }
-
-        const paymentAmount = Number(product.price ?? product.price_etb);
-        if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
-            console.error("Invalid BOA product amount:", product);
-            delete userState[userId];
-            return ctx.reply("⚠️ Could not read the order amount for BOA verification. Please start the order again.", { parse_mode: "HTML" });
-        }
-        product.price = paymentAmount;
-
-        let extractedPlayerId = null;
-        let extractedPlayerName = null;
-        if (state.collectedData?.player_id) {
-            extractedPlayerId = state.collectedData.player_id;
-        }
-        if (state.playerId && !extractedPlayerId) {
-            extractedPlayerId = state.playerId;
-            extractedPlayerName = state.playerName || null;
-        }
-
-        const externalProductId = product.type === "ragner" ? product.productId : (product.ragner_product_id || null);
-        const expectedRecipient = method?.account_number || null;
-
-        const verifyingMsg = await ctx.reply("🔍 Verifying BOA payment with ShegerPay...", { parse_mode: "HTML" });
-        const verification = await verifyPaymentWithTxId("boa", extractedTxId, paymentAmount, method?.account_name, expectedRecipient, senderAccount);
-
-        if (!verification.verified) {
-            const oldTransactionError = /too old|old transaction|recent payment/i.test(verification.error || "");
-            if (oldTransactionError) {
-                await db.query(`UPDATE orders SET status='REJECTED', transaction_id=$1, note=$2 WHERE id=$3`, [extractedTxId, verification.error, orderId]);
-                try {
-                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                        `❌ ${verification.error}\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                } catch(e) {
-                    await ctx.reply(`❌ ${verification.error}\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                }
-
-                await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                    `OLD BOA ORDER REJECTED\n` +
-                    `User: @${ctx.from.username || userId}\n` +
-                    `Product: ${product.name}\n` +
-                    `Amount: ${product.price} ETB\n` +
-                    `Order #${orderId}\n` +
-                    `TX ID: ${extractedTxId}\n` +
-                    `Sender Account: ${senderAccount}\n` +
-                    `Error: ${verification.error}`
-                );
-
-                delete userState[userId];
-                setTimeout(() => showMainMenu(ctx), 3000);
-                return;
-            }
-
-            const manualReviewMessage = `⚠️ Could not verify BOA payment automatically.\n\nYour order has been submitted for manual review.\n❌ Error: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, manualReviewMessage, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(manualReviewMessage, { parse_mode: "HTML" });
-            }
-
-            await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [extractedTxId, orderId]);
-
-            let adminCaption = `NEW BOA ORDER (Manual Review)\n\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Product: ${product.name}\n` +
-                `Amount: ${product.price} ETB\n` +
-                `Order ID: #${orderId}\n` +
-                `Method: ${method?.name || "Bank of Abyssinia"}\n` +
-                `OCR TX ID: ${extractedTxId}\n` +
-                `Sender Account: ${senderAccount}\n` +
-                `Error: ${verification.error}\n`;
-
-            if (extractedPlayerId) {
-                adminCaption += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminCaption += `Player Name: ${extractedPlayerName}\n`;
-            }
-            adminCaption += `\nUse buttons below to manage:`;
-
-            const adminMarkup = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Approve", callback_data: `approve_${orderId}` }, { text: "Reject", callback_data: `reject_${orderId}` }],
-                        [{ text: "Complete", callback_data: `complete_${orderId}` }],
-                    ],
-                },
-            };
-
-            if (fileId) {
-                await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, { caption: adminCaption, ...adminMarkup });
-            } else {
-                await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminCaption, adminMarkup);
-            }
-
-            delete userState[userId];
-            setTimeout(() => showMainMenu(ctx), 3000);
-            return;
-        }
-
-        const existingApprovedDeposit = await db.query(
-            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
-            [extractedTxId]
-        );
-        const existingApprovedOrder = await db.query(
-            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED') AND id <> $2",
-            [extractedTxId, orderId]
-        );
-
-        if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
-            await db.query(`UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1`, [orderId]);
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-            }
-            delete userState[userId];
-            return;
-        }
-
-        if (verification.data?.timestamp) {
-            const txTime = parseShegerTimestamp(verification.data.timestamp);
-            if (txTime && !isNaN(txTime.getTime())) {
-                const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
-                const orderCreatedAt = new Date(orderResult.rows[0]?.created_at);
-                const tenMinutesBeforeOrder = new Date(orderCreatedAt.getTime() - 10 * 60 * 1000);
-
-                if (txTime < tenMinutesBeforeOrder) {
-                    const diffMinutes = Math.round((orderCreatedAt - txTime) / (1000 * 60));
-                    await db.query(`UPDATE orders SET status='REJECTED', note='Old payment: ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
-
-                    try {
-                        await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                            `❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                    } catch(e) {
-                        await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                    }
-
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                        `OLD BOA TRANSACTION REJECTED\n` +
-                        `User: @${ctx.from.username || userId}\n` +
-                        `Product: ${product.name}\n` +
-                        `Amount: ${product.price} ETB\n` +
-                        `Order #${orderId}\n` +
-                        `TX ID: ${extractedTxId}\n` +
-                        `Sender Account: ${senderAccount}\n` +
-                        `TX Time: ${verification.data.timestamp}\n` +
-                        `Order Time: ${orderCreatedAt.toISOString()}\n` +
-                        `Difference: ${diffMinutes} minutes`
-                    );
-
-                    delete userState[userId];
-                    return;
-                }
-            }
-        }
-
-        await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
-
-        const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
-
-        if (isInstant) {
-            try {
-                const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
-                if (ragnerResult && ragnerResult.success) {
-                    await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-                    try {
-                        await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                            "✅ UC Delivered Successfully! (BOA payment verified)", { parse_mode: "HTML" });
-                    } catch(e) {}
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                        `Order #${orderId} auto-completed (BOA verified)\n` +
-                        `User: @${ctx.from.username || userId}\n` +
-                        `Product: ${product.name}\n` +
-                        `Amount: ${product.price} ETB\n` +
-                        `TX ID: ${extractedTxId}\n` +
-                        `Sender Account: ${senderAccount}`
-                    );
-                } else {
-                    await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                    try {
-                        await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                            "✅ Payment verified!\n\n⚠️ Auto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
-                    } catch(e) {}
-
-                    let adminMsg = `Order #${orderId} BOA payment verified but auto-delivery failed\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-                    if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                    if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-                    adminMsg += `\nClick "Complete" after manual delivery.`;
-
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
-                        reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
-                    });
-                }
-            } catch(ragnerError) {
-                await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-                try {
-                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                        "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-                } catch(e) {}
-
-                let adminMsg = `Order #${orderId} BOA payment verified (Ragner error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-                if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-                adminMsg += `\nRagner error: ${ragnerError.message}\nClick "Complete" after manual delivery.`;
-
-                await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
-                    reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
-                });
-            }
-        } else {
-            await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    "Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-            } catch(e) {}
-
-            let adminMsg = `Order #${orderId} automatically approved (BOA verified)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-            if (extractedPlayerId) {
-                adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-            }
-            adminMsg += `\nClick "Complete" after manual delivery.`;
-
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
-                reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
-            });
-        }
-
-        delete userState[userId];
-        setTimeout(() => showMainMenu(ctx), 3000);
-        return;
-    }
     // Handle player ID input
     if (!state || state.step !== "PLAYER") return;
     const input = ctx.message.text.trim();
@@ -2657,24 +2218,9 @@ bot.on("photo", async (ctx) => {
                 const provider = resolveShegerPayProvider(method?.name) || "telebirr";
                 const expectedRecipient = method?.account_number || null;
                 
-                // BOA requires sender account, so pause here and collect it from the user.
+                // Extract TX ID and construct full receipt URL for BOA
                 let senderAccount = null;
                 let finalTxId = extractedTxId;
-
-                if (provider === "boa") {
-                    userState[userId].extractedTxId = extractedTxId;
-                    userState[userId].ocrFullText = ocrFullText;
-                    userState[userId].depositPaymentFileId = fileId;
-                    userState[userId].step = "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT";
-
-                    try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                            "Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    } catch(e) {
-                        await ctx.reply("Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    }
-                    return;
-                }
                 
                 const verification = await verifyPaymentWithTxId(provider, finalTxId, depositAmount, method.account_name, expectedRecipient, senderAccount);
                               if (verification.verified) {
@@ -3085,36 +2631,6 @@ if (verification.data?.timestamp) {
                     return;
                     
                 } else {
-                    const duplicateFromShegerPay =
-                        verification.details?.already_verified === true ||
-                        verification.details?.error_code === "TX_003" ||
-                        /already verified before|transaction cannot be used again|already been used/i.test(verification.error || "");
-
-                    if (duplicateFromShegerPay) {
-                        await db.query(`UPDATE orders SET status='REJECTED', transaction_id=$1, note='Duplicate transaction' WHERE id=$2`, [extractedTxId, orderId]);
-                        const duplicateMessage = "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.";
-
-                        try {
-                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                duplicateMessage, { parse_mode: "HTML" });
-                        } catch(e) {
-                            await ctx.reply(duplicateMessage, { parse_mode: "HTML" });
-                        }
-
-                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                            `⚠️ DUPLICATE TRANSACTION REJECTED\n\n` +
-                            `👤 User: @${ctx.from.username || userId}\n` +
-                            `📦 Product: ${product.name}\n` +
-                            `💰 Amount: ${product.price} ETB\n` +
-                            `🧾 Order ID: #${orderId}\n` +
-                            `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
-                            `🔍 TX ID: ${extractedTxId}`
-                        );
-
-                        delete userState[userId];
-                        setTimeout(() => showMainMenu(ctx), 3000);
-                        return;
-                    }
                     // Verification FAILED - send to admin for manual review
                     const manualReviewMessage = `⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review.\nError: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
                     try {
