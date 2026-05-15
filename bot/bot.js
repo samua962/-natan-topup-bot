@@ -337,6 +337,8 @@ async function extractTxIdFromImage(imageFileId) {
                     lowerLine.includes('birhan') ||
                     lowerLine.includes('የግብይት ቁጥር') ||
                      lowerLine.includes('transfer id') ||
+                     lowerLine.includes('transfer-id') ||
+                     lowerLine.includes('transaction no') ||
                     lowerLine.includes('transaction to')) {
                     
                     console.log("📄 Found label line:", lines[i].trim());
