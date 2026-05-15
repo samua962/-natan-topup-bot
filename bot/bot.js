@@ -176,8 +176,8 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
             if (paidAmount < expectedAmount - 0.01) {
                 return { verified: false, error: `Amount too low: expected at least ${expectedAmount} ETB, got ${paidAmount} ETB`, details: data };
             }
-            if (paidAmount > expectedAmount + 10) {
-                return { verified: false, error: `Amount too high: expected around ${expectedAmount} ETB, got ${paidAmount} ETB (max +10 ETB allowed)`, details: data };
+            if (paidAmount > expectedAmount + 50) {
+                return { verified: false, error: `Amount too high: expected around ${expectedAmount} ETB, got ${paidAmount} ETB (max +50 ETB allowed)`, details: data };
             }
 
             if (data.timestamp) {
@@ -271,7 +271,7 @@ async function extractTxIdFromImage(imageFileId) {
             'successful', 'download', 'share', 'transfer', 'money', 'prizes',
             'million', 'etb', 'birr', 'transaction', 'time', 'type', 'number',
             'abou', 'ama', 'manuel', 'hailu', 'batru', 'finished', 'play',
-            'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr'
+            'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr', 'kaafimf'
         ];
         
         let txId = null;
@@ -337,7 +337,7 @@ async function extractTxIdFromImage(imageFileId) {
                     lowerLine.includes('birhan') ||
                     lowerLine.includes('የግብይት ቁጥር') ||
                      lowerLine.includes('transfer id') ||
-                     lowerLine.includes('transfer-id') ||
+                     lowerLine.includes('transfer-id:') ||
                      lowerLine.includes('transaction no') ||
                     lowerLine.includes('transaction to')) {
                     
