@@ -274,11 +274,25 @@ async function extractTxIdFromImage(imageFileId) {
             'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr', 'kaafimf'
         ];
         
+        function cleanTxCandidate(raw) {
+            return raw.replace(/[^A-Za-z0-9]/g, '').trim();
+        }
+        
+        function isValidTxCandidate(candidate, allowNumeric = false) {
+            if (!candidate) return false;
+            const cleaned = cleanTxCandidate(candidate);
+            if (cleaned.length < 6 || cleaned.length > 30) return false;
+            if (skipWords.includes(cleaned.toLowerCase())) return false;
+            if (!allowNumeric && !/[A-Za-z]/.test(cleaned)) return false;
+            return true;
+        }
+        
         let txId = null;
         
         // Strategy 1: Look for labeled transaction IDs
         console.log("🔍 Strategy 1: Looking for labeled TX IDs...");
         const labelPatterns = [
+            /Transfer[-\s]*Id[:\s]*([A-Za-z0-9]{6,30})/i,
             /Transaction\s*Reference[:\s]*(FT\s*[A-Za-z0-9]{6,30})/i,
             /Reference[:\s]*(FT\s*[A-Za-z0-9]{6,30})/i,
             /Transaction\s*(?:No|Number|ID|#)[:\s]*([A-Za-z0-9]{6,30})/i,
@@ -291,8 +305,9 @@ async function extractTxIdFromImage(imageFileId) {
         for (const pattern of labelPatterns) {
             const match = fullText.match(pattern);
             if (match && match[1]) {
-                const candidate = match[1].replace(/\s/g, '').trim();
-                if (!skipWords.includes(candidate.toLowerCase()) && candidate.length >= 6) {
+                const candidate = cleanTxCandidate(match[1]);
+                const allowNumeric = /Transfer[-\s]*Id/i.test(pattern.source);
+                if (isValidTxCandidate(candidate, allowNumeric) && candidate.length >= 6) {
                     txId = candidate;
                     console.log("✅ Found TX ID via label:", txId);
                     break;
@@ -322,35 +337,49 @@ async function extractTxIdFromImage(imageFileId) {
             }
         }
         
-        // Strategy 2.5: Look for the NEXT line after a transaction label
+        // Strategy 2.5: Look for the NEXT line or same line after a transaction label
         if (!txId) {
             console.log("🔍 Strategy 2.5: Looking for ID on line after transaction label...");
             const lines = fullText.split('\n');
             for (let i = 0; i < lines.length; i++) {
-                const lowerLine = lines[i].toLowerCase().trim();
+                const lineText = lines[i].trim();
+                const lowerLine = lineText.toLowerCase();
+                const isTransferLabel = lowerLine.includes('transfer id') || lowerLine.includes('transfer-id');
                 if (lowerLine.includes('transaction number') || 
                     lowerLine.includes('transaction id') ||
                     lowerLine.includes('transaction reference') ||
                     lowerLine.includes('receipt') ||
-                    lowerLine.includes('Lakkoofsa sochii') ||
-                    lowerLine.includes('Within BOA') ||
+                    lowerLine.includes('lakkoofsa sochii') ||
+                    lowerLine.includes('within boa') ||
                     lowerLine.includes('birhan') ||
                     lowerLine.includes('የግብይት ቁጥር') ||
-                     lowerLine.includes('transfer id') ||
-                     lowerLine.includes('transfer-id:') ||
-                     lowerLine.includes('transaction no') ||
+                    isTransferLabel ||
+                    lowerLine.includes('transaction no') ||
                     lowerLine.includes('transaction to')) {
                     
-                    console.log("📄 Found label line:", lines[i].trim());
+                    console.log("📄 Found label line:", lineText);
+                    
+                    if (isTransferLabel) {
+                        const sameLineMatch = lineText.match(/transfer[-\s]*id[:\s]*([A-Za-z0-9]{6,30})/i);
+                        if (sameLineMatch && sameLineMatch[1]) {
+                            const candidate = cleanTxCandidate(sameLineMatch[1]);
+                            if (isValidTxCandidate(candidate, true)) {
+                                txId = candidate;
+                                console.log("✅ Found TX ID on same transfer-id line:", txId);
+                                break;
+                            }
+                        }
+                    }
                     
                     for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-                        const line = lines[j].trim();
-                        if (line && !skipWords.some(w => line.toLowerCase().includes(w))) {
-                            console.log("   Checking line", j + ":", line);
-                            const codeMatch = line.match(/([A-Z0-9]{2,4}\s*\d{2,4}[A-Z0-9]{2,8}|[A-Z0-9]{8,20})/i);
+                        const nextLine = lines[j].trim();
+                        if (nextLine && !skipWords.some(w => nextLine.toLowerCase().includes(w))) {
+                            console.log("   Checking line", j + ":", nextLine);
+                            const codeMatch = nextLine.match(/([A-Z0-9]{2,4}\s*\d{2,4}[A-Z0-9]{2,8}|[A-Z0-9]{8,20})/i);
                             if (codeMatch) {
-                                const candidate = codeMatch[1].replace(/\s/g, '').trim();
-                                if (candidate.length >= 8 && /[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
+                                const candidate = cleanTxCandidate(codeMatch[1]);
+                                const allowNumeric = isTransferLabel;
+                                if (isValidTxCandidate(candidate, allowNumeric)) {
                                     txId = candidate;
                                     console.log("✅ Found TX ID on line after label:", txId, "(line index:", j, ")");
                                     break;
