@@ -129,11 +129,11 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
     }
     const apiKey = process.env.SHEGERPAY_API_KEY;
     if (!apiKey) return { verified: false, error: "API key missing" };
-
-    const maxRetries = 1;
+    // Allow more retries for eBirr Kaafi since their upstream endpoint can intermittently fail DNS
+    const normalizedProvider = provider?.toString().trim().toLowerCase();
+    const maxRetries = (normalizedProvider === 'ebirr_kaafi') ? 3 : 1;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-            const normalizedProvider = provider?.toString().trim().toLowerCase();
             if (!normalizedProvider) {
                 return { verified: false, error: "Payment provider could not be determined" };
             }
@@ -208,10 +208,26 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
                 console.error("Status:", err.response.status);
                 console.error("Data:", err.response.data);
             }
-            if (attempt === maxRetries) {
-                return { verified: false, error: err.response?.data?.detail?.message || err.message };
+
+            // Detect transient network / DNS errors reported by underlying HTTP lib or ShegerPay
+            const errMsg = (err.message || "").toString();
+            const transientNetwork = /Max retries exceeded|Failed to resolve|Name or service not known|ENOTFOUND|ECONNRESET|ECONNREFUSED|timeout/i.test(errMsg) || err.code === 'ENOTFOUND';
+
+            if (transientNetwork && attempt < maxRetries) {
+                // exponential backoff
+                const backoffMs = Math.pow(2, attempt) * 1000;
+                console.log(`⚠️ Transient network error detected, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+                continue;
             }
-            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            // Final failure: give a clearer error for eBirr Kaafi DNS/connectivity issues
+            let finalError = err.response?.data?.detail?.message || err.response?.data?.message || errMsg;
+            if (transientNetwork && normalizedProvider === 'ebirr_kaafi') {
+                finalError = `eBirr Kaafi: Connection error - ${errMsg}`;
+            }
+
+            return { verified: false, error: finalError };
         }
     }
 }
