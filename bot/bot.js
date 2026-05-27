@@ -1602,67 +1602,126 @@ async function getAllUserIds() {
 // 🟢 BROADCAST ANNOUNCEMENT TO ALL USERS
 // =====================
 async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminId = null) {
-    const userIds = await getAllUserIds();
-    let successCount = 0;
-    let failureCount = 0;
+    try {
+        const userIds = await getAllUserIds();
+        let successCount = 0;
+        let failureCount = 0;
+        const errors = [];
 
-    if (userIds.length === 0) {
-        if (adminId) {
-            await bot.telegram.sendMessage(adminId, "⚠️ No users found in database to broadcast announcement.");
+        if (userIds.length === 0) {
+            if (adminId) {
+                try {
+                    await bot.telegram.sendMessage(adminId, "⚠️ No users found in database to broadcast announcement.");
+                } catch (e) {
+                    console.error("Failed to notify admin of no users:", e.message);
+                }
+            }
+            return { successCount: 0, failureCount: 0, errors: [] };
         }
-        return { successCount: 0, failureCount: 0 };
-    }
 
-    console.log(`📢 Starting broadcast to ${userIds.length} users with ${imageFileIds.length} images...`);
+        console.log(`📢 Starting broadcast to ${userIds.length} users with ${imageFileIds.length} images...`);
 
-    // Batch broadcasting with 100ms delay between messages to avoid rate limiting
-    const BATCH_DELAY = 100; // milliseconds between each message
-    
-    for (let i = 0; i < userIds.length; i++) {
-        const userId = userIds[i];
+        // Reduced delay to speed up broadcast (30ms instead of 100ms)
+        const BATCH_DELAY = 30; // milliseconds between each message
+        const BATCH_SIZE = 50;  // Send in batches of 50 to allow faster completion
         
-        try {
-            if (imageFileIds.length > 1) {
-                // Send as media group (album/carousel) for multiple images
-                const mediaGroup = imageFileIds.map((fileId, idx) => ({
-                    type: 'photo',
-                    media: fileId,
-                    caption: idx === 0 ? messageText : '', // Only first photo gets caption
-                    parse_mode: 'HTML'
-                }));
-                await bot.telegram.sendMediaGroup(userId, mediaGroup);
-                successCount++;
-            } else if (imageFileIds.length === 1) {
-                // Send single image with caption
-                await bot.telegram.sendPhoto(userId, imageFileIds[0], {
-                    caption: messageText,
-                    parse_mode: "HTML"
-                });
-                successCount++;
-            } else {
-                // Send text-only message
-                await bot.telegram.sendMessage(userId, messageText, {
-                    parse_mode: "HTML"
-                });
-                successCount++;
+        // Process in batches
+        for (let batch = 0; batch < userIds.length; batch += BATCH_SIZE) {
+            const batchUsers = userIds.slice(batch, batch + BATCH_SIZE);
+            const batchPromises = batchUsers.map(async (userId) => {
+                try {
+                    if (imageFileIds.length > 1) {
+                        // Send as media group (album/carousel) for multiple images
+                        const mediaGroup = imageFileIds.map((fileId, idx) => ({
+                            type: 'photo',
+                            media: fileId,
+                            caption: idx === 0 ? messageText : '', // Only first photo gets caption
+                            parse_mode: 'HTML'
+                        }));
+                        await bot.telegram.sendMediaGroup(userId, mediaGroup);
+                        return { success: true, userId };
+                    } else if (imageFileIds.length === 1) {
+                        // Send single image with caption
+                        await bot.telegram.sendPhoto(userId, imageFileIds[0], {
+                            caption: messageText,
+                            parse_mode: "HTML"
+                        });
+                        return { success: true, userId };
+                    } else {
+                        // Send text-only message
+                        await bot.telegram.sendMessage(userId, messageText, {
+                            parse_mode: "HTML"
+                        });
+                        return { success: true, userId };
+                    }
+                } catch (error) {
+                    return { 
+                        success: false, 
+                        userId,
+                        error: error.message,
+                        code: error.code
+                    };
+                }
+            });
+
+            // Execute batch in parallel
+            const results = await Promise.all(batchPromises);
+            
+            // Count results
+            for (const result of results) {
+                if (result.success) {
+                    successCount++;
+                } else {
+                    failureCount++;
+                    // Only log non-403 errors to reduce spam
+                    if (result.code !== 403) {
+                        errors.push(`User ${result.userId}: ${result.error}`);
+                    }
+                }
             }
-        } catch (error) {
-            failureCount++;
-            console.error(`❌ Failed to send to user ${userId}:`, error.message);
-            // Don't spam logs for expected errors like blocked/inactive users
-            if (error.code !== 403) {
-                console.error(`   Error details: ${error.message}`);
+
+            console.log(`📊 Batch progress: ${Math.min(batch + BATCH_SIZE, userIds.length)}/${userIds.length} processed`);
+
+            // Add delay between batches
+            if (batch + BATCH_SIZE < userIds.length) {
+                await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
             }
         }
 
-        // Add delay between messages to prevent rate limiting
-        if (i < userIds.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+        console.log(`📊 Broadcast complete: ${successCount} sent, ${failureCount} failed`);
+        
+        // Notify admin of completion
+        if (adminId) {
+            try {
+                await bot.telegram.sendMessage(
+                    adminId,
+                    `✅ BROADCAST COMPLETE\n\n` +
+                    `✅ Sent: ${successCount}\n` +
+                    `❌ Failed: ${failureCount}\n` +
+                    `Total: ${successCount + failureCount}`,
+                    { parse_mode: "HTML" }
+                );
+            } catch (e) {
+                console.error("Failed to notify admin of broadcast completion:", e.message);
+            }
         }
+
+        return { successCount, failureCount, errors };
+    } catch (error) {
+        console.error("❌ CRITICAL ERROR in broadcastAnnouncement:", error);
+        if (adminId) {
+            try {
+                await bot.telegram.sendMessage(
+                    adminId,
+                    `❌ BROADCAST FAILED\n\nError: ${error.message}`,
+                    { parse_mode: "HTML" }
+                );
+            } catch (e) {
+                console.error("Failed to notify admin of broadcast error:", e.message);
+            }
+        }
+        return { successCount: 0, failureCount: 0, errors: [error.message] };
     }
-
-    console.log(`📊 Broadcast complete: ${successCount} sent, ${failureCount} failed`);
-    return { successCount, failureCount };
 }
 
 // =====================
@@ -2375,25 +2434,36 @@ bot.on("text", async (ctx) => {
     // =====================
     if (state?.announcementStep === "WAITING_FOR_IMAGES") {
         if (text.toLowerCase() === "done") {
-            // Proceed with broadcast
-            const result = await broadcastAnnouncement(
-                bot,
-                state.announcementData.messageText,
-                state.announcementData.images,
-                userId
-            );
-            
-            const announcement = state.announcementData.messageText;
-            const imageCount = state.announcementData.images.length;
-            
-            await ctx.reply(
-                `✅ ANNOUNCEMENT BROADCAST COMPLETE!\n\n` +
-                `📢 Successfully sent to: <b>${result.successCount}</b> users\n` +
-                `❌ Failed to reach: <b>${result.failureCount}</b> users\n\n` +
-                `📝 Message Preview:\n<i>${announcement.substring(0, 100)}${announcement.length > 100 ? "..." : ""}</i>\n\n` +
-                `📸 Images: ${imageCount > 0 ? `${imageCount} image${imageCount > 1 ? "s" : ""} attached` : "No images"}`,
-                { parse_mode: "HTML" }
-            );
+            try {
+                // Notify user that broadcast is starting
+                await ctx.reply("🔄 Broadcasting announcement to all users...\n\nThis may take a minute. Please wait...", { parse_mode: "HTML" });
+                
+                // Proceed with broadcast
+                const result = await broadcastAnnouncement(
+                    bot,
+                    state.announcementData.messageText,
+                    state.announcementData.images,
+                    userId
+                );
+                
+                const announcement = state.announcementData.messageText;
+                const imageCount = state.announcementData.images.length;
+                
+                await ctx.reply(
+                    `✅ ANNOUNCEMENT BROADCAST COMPLETE!\n\n` +
+                    `📢 Successfully sent to: <b>${result.successCount}</b> users\n` +
+                    `❌ Failed to reach: <b>${result.failureCount}</b> users\n\n` +
+                    `📝 Message Preview:\n<i>${announcement.substring(0, 100)}${announcement.length > 100 ? "..." : ""}</i>\n\n` +
+                    `📸 Images: ${imageCount > 0 ? `${imageCount} image${imageCount > 1 ? "s" : ""} attached` : "No images"}`,
+                    { parse_mode: "HTML" }
+                );
+            } catch (error) {
+                console.error("❌ Broadcast error:", error);
+                await ctx.reply(
+                    `❌ Broadcast failed: ${error.message}`,
+                    { parse_mode: "HTML" }
+                );
+            }
 
             // Clean up state
             delete userState[userId].announcementStep;
