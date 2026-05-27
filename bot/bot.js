@@ -387,6 +387,10 @@ async function extractTxIdFromImage(imageFileId) {
                     lowerLine.includes('lakkoofsa sochii') ||
                     lowerLine.includes('within boa') ||
                     lowerLine.includes('birhan') ||
+                      lowerLine.includes('2026') ||
+                       lowerLine.includes('VAT invoice NO):') ||
+                        lowerLine.includes('setteld amount') ||
+                      
                     lowerLine.includes('የግብይት ቁጥር') ||
                     isTransferLabel ||
                     lowerLine.includes('transaction no') ||
@@ -1112,17 +1116,40 @@ async function processFieldInput(ctx, product, state, input) {
 }
 
 // =====================
-// 🟢 SHOW PAYMENT OPTIONS (Wallet or Bank)
+// 🟢 SHOW UNIFIED PAYMENT OPTIONS (Wallet + All Bank Methods)
 // =====================
 async function showPaymentOptions(ctx, productInfo) {
     const balance = await getWalletBalance(ctx.from.id);
-    const buttons = [
-        [{ text: "👛 Pay from Wallet", callback_data: `pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` }],
-        [{ text: "💳 Bank Transfer", callback_data: `pay_bank_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` }],
-        [{ text: "❌ Cancel Order", callback_data: "cancel_order" }],
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
-    ];
+    const methods = await getPaymentMethods();
+    
+    const userId = ctx.from.id;
+    if (!userState[userId]) userState[userId] = {};
+    userState[userId].productInfo = productInfo;
+
+    const buttons = [];
+    
+    // Add Wallet Payment option
+    buttons.push([{ 
+        text: `👛 Wallet Payment (${balance} ETB)`, 
+        callback_data: `unified_pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` 
+    }]);
+    
+    // Add all bank transfer methods
+    if (methods.length > 0) {
+        methods.forEach((m) => {
+            buttons.push([
+                { 
+                    text: m.name, 
+                    callback_data: `unified_payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` 
+                }
+            ]);
+        });
+    }
+    
+    buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
+    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
+    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+
     await safeEdit(
         ctx,
         `💳 PAYMENT OPTIONS\n\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n\n👛 Wallet Balance: ${balance} ETB\n\nSelect payment method:`,
@@ -1559,6 +1586,127 @@ bot.command("debug", async (ctx) => {
 });
 
 // =====================
+// 🟢 GET ALL USER IDS FOR ANNOUNCEMENT
+// =====================
+async function getAllUserIds() {
+    try {
+        const result = await db.query("SELECT DISTINCT telegram_id FROM users WHERE telegram_id IS NOT NULL ORDER BY telegram_id");
+        return result.rows.map(r => r.telegram_id);
+    } catch (error) {
+        console.error("Error fetching user IDs:", error);
+        return [];
+    }
+}
+
+// =====================
+// 🟢 BROADCAST ANNOUNCEMENT TO ALL USERS
+// =====================
+async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminId = null) {
+    const userIds = await getAllUserIds();
+    let successCount = 0;
+    let failureCount = 0;
+
+    if (userIds.length === 0) {
+        if (adminId) {
+            await bot.telegram.sendMessage(adminId, "⚠️ No users found in database to broadcast announcement.");
+        }
+        return { successCount: 0, failureCount: 0 };
+    }
+
+    console.log(`📢 Starting broadcast to ${userIds.length} users with ${imageFileIds.length} images...`);
+
+    // Batch broadcasting with 100ms delay between messages to avoid rate limiting
+    const BATCH_DELAY = 100; // milliseconds between each message
+    
+    for (let i = 0; i < userIds.length; i++) {
+        const userId = userIds[i];
+        
+        try {
+            if (imageFileIds.length > 1) {
+                // Send as media group (album/carousel) for multiple images
+                const mediaGroup = imageFileIds.map((fileId, idx) => ({
+                    type: 'photo',
+                    media: fileId,
+                    caption: idx === 0 ? messageText : '', // Only first photo gets caption
+                    parse_mode: 'HTML'
+                }));
+                await bot.telegram.sendMediaGroup(userId, mediaGroup);
+                successCount++;
+            } else if (imageFileIds.length === 1) {
+                // Send single image with caption
+                await bot.telegram.sendPhoto(userId, imageFileIds[0], {
+                    caption: messageText,
+                    parse_mode: "HTML"
+                });
+                successCount++;
+            } else {
+                // Send text-only message
+                await bot.telegram.sendMessage(userId, messageText, {
+                    parse_mode: "HTML"
+                });
+                successCount++;
+            }
+        } catch (error) {
+            failureCount++;
+            console.error(`❌ Failed to send to user ${userId}:`, error.message);
+            // Don't spam logs for expected errors like blocked/inactive users
+            if (error.code !== 403) {
+                console.error(`   Error details: ${error.message}`);
+            }
+        }
+
+        // Add delay between messages to prevent rate limiting
+        if (i < userIds.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+        }
+    }
+
+    console.log(`📊 Broadcast complete: ${successCount} sent, ${failureCount} failed`);
+    return { successCount, failureCount };
+}
+
+// =====================
+// 🟢 ANNOUNCEMENT COMMAND
+// =====================
+bot.command("announcement", async (ctx) => {
+    const userId = ctx.from.id;
+    const adminId = parseInt(process.env.ADMIN_ID);
+
+    // Check admin authorization
+    if (userId !== adminId) {
+        await ctx.reply("❌ You are not authorized to use this command.\n\nOnly admins can broadcast announcements.");
+        return;
+    }
+
+    // Initialize announcement state
+    if (!userState[userId]) userState[userId] = {};
+    userState[userId].announcementStep = "WAITING_FOR_TEXT";
+    userState[userId].announcementData = { images: [] };
+
+    await ctx.reply(
+        "📢 ANNOUNCEMENT BROADCAST MODE\n\n" +
+        "Step 1️⃣: Send me the announcement message text.\n\n" +
+        "You can use HTML formatting:\n" +
+        "• <b>Bold</b> for bold text\n" +
+        "• <i>Italic</i> for italic text\n" +
+        "• <u>Underline</u> for underline\n" +
+        "• <code>Code</code> for code\n\n" +
+        "Type /cancel_announcement to abort.",
+        { parse_mode: "HTML" }
+    );
+});
+
+// Handle announcement cancellation
+bot.command("cancel_announcement", async (ctx) => {
+    const userId = ctx.from.id;
+    if (userState[userId]?.announcementStep) {
+        delete userState[userId].announcementStep;
+        delete userState[userId].announcementData;
+        await ctx.reply("❌ Announcement cancelled.");
+    }
+});
+
+// =====================
 // 🟢 SHOW PRODUCTS BY CATEGORY (for categories without subcategories)
 // =====================
 async function showProductsByCategory(ctx, categoryId) {
@@ -1945,6 +2093,50 @@ if (data === "help_menu") {
         await showBankTransferMethods(ctx, productInfo);
         return;
     }
+
+    // ----- UNIFIED PAYMENT OPTION: WALLET -----
+    if (data.startsWith("unified_pay_wallet_")) {
+        const productInfo = {
+            productId: state.product.productId,
+            price: state.product.price,
+            name: state.product.name,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            userInputs: state.collectedData,
+            type: state.product.type,
+            product_type: state.product.product_type
+        };
+        await processWalletPayment(ctx, productInfo);
+        return;
+    }
+
+    // ----- UNIFIED PAYMENT OPTION: BANK METHOD -----
+    if (data.startsWith("unified_payment_")) {
+        const parts = data.split("_");
+        const methodId = parseInt(parts[2]);
+        const productId = parts[3];
+        const price = parseFloat(parts[4]);
+        const name = parts.slice(5).join(" ");
+        const methods = await getPaymentMethods();
+        const selectedMethod = methods.find((m) => m.id === methodId);
+        if (!selectedMethod) {
+            await safeEdit(ctx, "❌ Payment method not found.", []);
+            return;
+        }
+        const productInfo = state.productInfo || {
+            productId,
+            price,
+            name,
+            type: state.product?.type,
+            product_type: state.product?.product_type,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            userInputs: state.collectedData,
+        };
+        userState[userId].productInfo = productInfo;
+        await showPaymentDetails(ctx, selectedMethod, productInfo);
+        return;
+    }
     
     // ----- PAYMENT METHOD SELECTION (Bank Transfer) -----
     if (data.startsWith("payment_")) {
@@ -2152,6 +2344,66 @@ bot.on("text", async (ctx) => {
         await ctx.reply("❌ Order Cancelled.", { parse_mode: "HTML" });
         return showMainMenu(ctx);
     }
+
+    // =====================
+    // =====================
+    // 🟢 ANNOUNCEMENT: WAITING FOR TEXT
+    // =====================
+    if (state?.announcementStep === "WAITING_FOR_TEXT") {
+        if (text.trim().length === 0) {
+            return ctx.reply("❌ Message cannot be empty. Please send your announcement text:");
+        }
+
+        userState[userId].announcementData.messageText = text.trim();
+        userState[userId].announcementStep = "WAITING_FOR_IMAGES";
+
+        await ctx.reply(
+            "✅ Message received!\n\n" +
+            "Step 2️⃣: Now send me images (optional).\n\n" +
+            "📸 You can send:\n" +
+            "• 1 image\n" +
+            "• Multiple images (they will appear as a carousel/album)\n" +
+            "• Type 'done' to skip images and broadcast\n\n" +
+            "Type /cancel_announcement to abort.",
+            { parse_mode: "HTML" }
+        );
+        return;
+    }
+
+    // =====================
+    // 🟢 ANNOUNCEMENT: WAITING FOR IMAGES
+    // =====================
+    if (state?.announcementStep === "WAITING_FOR_IMAGES") {
+        if (text.toLowerCase() === "done") {
+            // Proceed with broadcast
+            const result = await broadcastAnnouncement(
+                bot,
+                state.announcementData.messageText,
+                state.announcementData.images,
+                userId
+            );
+            
+            const announcement = state.announcementData.messageText;
+            const imageCount = state.announcementData.images.length;
+            
+            await ctx.reply(
+                `✅ ANNOUNCEMENT BROADCAST COMPLETE!\n\n` +
+                `📢 Successfully sent to: <b>${result.successCount}</b> users\n` +
+                `❌ Failed to reach: <b>${result.failureCount}</b> users\n\n` +
+                `📝 Message Preview:\n<i>${announcement.substring(0, 100)}${announcement.length > 100 ? "..." : ""}</i>\n\n` +
+                `📸 Images: ${imageCount > 0 ? `${imageCount} image${imageCount > 1 ? "s" : ""} attached` : "No images"}`,
+                { parse_mode: "HTML" }
+            );
+
+            // Clean up state
+            delete userState[userId].announcementStep;
+            delete userState[userId].announcementData;
+            return;
+        } else {
+            return ctx.reply("❌ Please send images or type 'done' to finish and broadcast.");
+        }
+    }
+
     // Handle BOA sender account for wallet deposit verification.
     if (state?.step === "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT") {
         const senderAccount = text.trim().replace(/\s/g, "");
@@ -2627,6 +2879,37 @@ bot.on("photo", async (ctx) => {
     const state = userState[userId];
 
     console.log("📸 Photo received. state:", JSON.stringify(state, null, 2));
+
+    // =====================
+    // 🟢 ANNOUNCEMENT: COLLECT IMAGES
+    // =====================
+    if (state?.announcementStep === "WAITING_FOR_IMAGES") {
+        try {
+            const fileId = ctx.message.photo.pop().file_id;
+            
+            // Add image to collection
+            if (!userState[userId].announcementData.images) {
+                userState[userId].announcementData.images = [];
+            }
+            userState[userId].announcementData.images.push(fileId);
+            
+            const imageCount = userState[userId].announcementData.images.length;
+            
+            await ctx.reply(
+                `📸 Image ${imageCount} received!\n\n` +
+                `You have sent: <b>${imageCount}</b> image${imageCount > 1 ? "s" : ""}\n\n` +
+                `You can:\n` +
+                `• Send another image\n` +
+                `• Type <code>done</code> to broadcast the announcement`,
+                { parse_mode: "HTML" }
+            );
+            return;
+        } catch (error) {
+            console.error("❌ Announcement image error:", error);
+            await ctx.reply("❌ Error processing image. Please try again.", { parse_mode: "HTML" });
+            return;
+        }
+    }
 
     if (!state || (state.step !== "PAY" && state.step !== "DEPOSIT_PAYMENT_WAITING")) {
         console.log("❌ Not in PAY or DEPOSIT_PAYMENT_WAITING state");
@@ -3201,5 +3484,7 @@ if (verification.data?.timestamp) {
         await ctx.reply("❌ Error processing payment. Please try again or contact support.", { parse_mode: "HTML" });
     }
 });
+
+
 
 module.exports = bot;
