@@ -10,6 +10,7 @@ const authRoutes = require("./routes/auth.routes");
 const usersRoutes = require("./routes/users.routes");
 const giveawayRoutes = require("./routes/giveaway.routes");
 const webhookRoutes = require("./routes/webhook.routes");
+const emojiRoutes = require("./routes/emoji.routes");
 
 const app = express();
 
@@ -74,6 +75,7 @@ app.use("/api/orders", authMiddleware, orderRoutes);
 app.use("/api/settings", authMiddleware, settingsRoutes);
 app.use("/api/users", authMiddleware, usersRoutes);
 app.use("/api/giveaway", authMiddleware, giveawayRoutes);
+app.use("/api/emojis", authMiddleware, emojiRoutes);
 
 // Telegram webhook
 app.post("/webhook", (req, res) => {

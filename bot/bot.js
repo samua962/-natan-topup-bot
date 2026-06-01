@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const db = require("../database/db");
+const { getEmoji } = require("./emoji-helper");
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const axios = require("axios");
 const { createOrder, validatePlayer, validatePlayerOnly } = require("../services/ragner");
@@ -832,16 +833,19 @@ async function showRagnerProducts(ctx) {
             await safeEdit(ctx, "📭 No instant products available.", [[{ text: "🔙 Back", callback_data: "back" }]]);
             return;
         }
+        const ucInstantEmoji = getEmoji('system', 'uc_instant');
         const productButtons = [];
         for (const p of products) {
             const margin = await getProfitMargin(p.price);
             const priceWithMargin = p.price * (1 + margin / 100);
             let priceETB = Math.round(priceWithMargin * rate);
             priceETB = roundPrice(priceETB);
-            productButtons.push({
+            const btn = {
                 text: `${p.name} - ${priceETB} ETB`,
                 callback_data: `ragner_${p.id}_${priceETB}_${p.name.replace(/ /g, "_")}`,
-            });
+            };
+            if (ucInstantEmoji) btn.icon_custom_emoji_id = ucInstantEmoji;
+            productButtons.push(btn);
         }
         const buttons = buildButtons(productButtons);
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
@@ -874,10 +878,15 @@ async function showDatabaseProducts(ctx, subId) {
         }
         const productType = result.rows[0]?.product_type;
         const buttons = buildButtons(
-            result.rows.map((p) => ({
-                text: `${p.name} - ${p.price_etb} ETB`,
-                callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
-            })),
+            result.rows.map((p) => {
+                const btn = {
+                    text: `${p.name} - ${p.price_etb} ETB`,
+                    callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
+                };
+                const emojiId = getEmoji('product', p.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            }),
             true
         );
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
@@ -915,26 +924,47 @@ async function showCategories(ctx) {
             "SELECT * FROM categories WHERE is_active=true AND name NOT IN ('channel', 'information', 'info') ORDER BY position"
         );
         const buttons = buildButtonsHorizontal(
-            categories.rows.map((c) => ({ 
-                text: `${c.icon || "📂"} ${c.display_name}`, 
-                callback_data: `cat_${c.id}` 
-            }))
+            categories.rows.map((c) => {
+                const btn = { text: c.display_name, callback_data: `cat_${c.id}` };
+                const emojiId = getEmoji('category', c.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            })
         );
-        buttons.push([
-            { text: "📋 My Orders", callback_data: "myorders_back" },
-            { text: "👛 My Wallet", callback_data: "show_wallet" },
-        ]);
-        buttons.push([
-            { text: "🎟️ Get Ticket", callback_data: "giveaway_ticket" },
-        ]);
-        buttons.push([
-            { text: "📞 Support", callback_data: "support_menu" },
-            { text: "📢 Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` },
-        ]);
-        buttons.push([
-            { text: "ℹ️ Info", callback_data: "info_menu" },
-            { text: "❓ Help", callback_data: "help_menu" },
-        ]);
+        
+        const myOrdersBtn = { text: "My Orders", callback_data: "myorders_back" };
+        const myOrdersEmoji = getEmoji('system', 'orders');
+        if (myOrdersEmoji) myOrdersBtn.icon_custom_emoji_id = myOrdersEmoji;
+        
+        const myWalletBtn = { text: "My Wallet", callback_data: "show_wallet" };
+        const myWalletEmoji = getEmoji('system', 'wallet');
+        if (myWalletEmoji) myWalletBtn.icon_custom_emoji_id = myWalletEmoji;
+        
+        buttons.push([myOrdersBtn, myWalletBtn]);
+        
+        const getTicketBtn = { text: "Get Ticket", callback_data: "giveaway_ticket" };
+        const ticketEmoji = getEmoji('system', 'ticket');
+        if (ticketEmoji) getTicketBtn.icon_custom_emoji_id = ticketEmoji;
+        buttons.push([getTicketBtn]);
+        
+        const supportBtn = { text: "Support", callback_data: "support_menu" };
+        const supportEmoji = getEmoji('system', 'support');
+        if (supportEmoji) supportBtn.icon_custom_emoji_id = supportEmoji;
+        
+        const channelBtn = { text: "Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` };
+        const channelEmoji = getEmoji('system', 'channel');
+        if (channelEmoji) channelBtn.icon_custom_emoji_id = channelEmoji;
+        buttons.push([supportBtn, channelBtn]);
+        
+        const infoBtn = { text: "Info", callback_data: "info_menu" };
+        const infoEmoji = getEmoji('system', 'info');
+        if (infoEmoji) infoBtn.icon_custom_emoji_id = infoEmoji;
+        
+        const helpBtn = { text: "Help", callback_data: "help_menu" };
+        const helpEmoji = getEmoji('system', 'help');
+        if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
+        buttons.push([infoBtn, helpBtn]);
+        
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
         await safeEdit(ctx, "📂 Select Category:", buttons);
     } catch (error) {
@@ -1311,23 +1341,48 @@ async function showMainMenu(ctx) {
             "SELECT * FROM categories WHERE is_active=true AND name NOT IN ('channel', 'information', 'info') ORDER BY position"
         );
         const buttons = buildButtonsHorizontal(
-            categories.rows.map((c) => ({ text: `${c.icon || "📂"} ${c.display_name}`, callback_data: `cat_${c.id}` }))
+            categories.rows.map((c) => {
+                const btn = { text: c.display_name, callback_data: `cat_${c.id}` };
+                const emojiId = getEmoji('category', c.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            })
         );
-        buttons.push([
-            { text: "📋 My Orders", callback_data: "myorders_back" },
-            { text: "👛 My Wallet", callback_data: "show_wallet" },
-        ]);
-        buttons.push([
-            { text: "🎟️ Get Ticket", callback_data: "giveaway_ticket" },
-        ]);
-        buttons.push([
-            { text: "📞 Support", callback_data: "support_menu" },
-            { text: "📢 Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` },
-        ]);
-        buttons.push([
-            { text: "ℹ️ Info", callback_data: "info_menu" },
-            { text: "❓ Help", callback_data: "help_menu" },
-        ]);
+        
+        // System buttons with emoji IDs
+        const myOrdersBtn = { text: "My Orders", callback_data: "myorders_back" };
+        const myOrdersEmoji = getEmoji('system', 'orders');
+        if (myOrdersEmoji) myOrdersBtn.icon_custom_emoji_id = myOrdersEmoji;
+        
+        const myWalletBtn = { text: "My Wallet", callback_data: "show_wallet" };
+        const myWalletEmoji = getEmoji('system', 'wallet');
+        if (myWalletEmoji) myWalletBtn.icon_custom_emoji_id = myWalletEmoji;
+        
+        buttons.push([myOrdersBtn, myWalletBtn]);
+        
+        const getTicketBtn = { text: "Get Ticket", callback_data: "giveaway_ticket" };
+        const ticketEmoji = getEmoji('system', 'ticket');
+        if (ticketEmoji) getTicketBtn.icon_custom_emoji_id = ticketEmoji;
+        buttons.push([getTicketBtn]);
+        
+        const supportBtn = { text: "Support", callback_data: "support_menu" };
+        const supportEmoji = getEmoji('system', 'support');
+        if (supportEmoji) supportBtn.icon_custom_emoji_id = supportEmoji;
+        
+        const channelBtn = { text: "Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` };
+        const channelEmoji = getEmoji('system', 'channel');
+        if (channelEmoji) channelBtn.icon_custom_emoji_id = channelEmoji;
+        buttons.push([supportBtn, channelBtn]);
+        
+        const infoBtn = { text: "Info", callback_data: "info_menu" };
+        const infoEmoji = getEmoji('system', 'info');
+        if (infoEmoji) infoBtn.icon_custom_emoji_id = infoEmoji;
+        
+        const helpBtn = { text: "Help", callback_data: "help_menu" };
+        const helpEmoji = getEmoji('system', 'help');
+        if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
+        buttons.push([infoBtn, helpBtn]);
+        
         const mainMenuBanner = await getMainMenuBanner();
         const caption = `🎮 Natan Top Up\n\n⚡ Fast • Secure • Reliable\n\nSelect a service below 👇`;
         
@@ -1787,10 +1842,15 @@ async function showProductsByCategory(ctx, categoryId) {
         }
         
         const buttons = buildButtons(
-            result.rows.map((p) => ({
-                text: `${p.name} - ${p.price_etb} ETB`,
-                callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
-            })),
+            result.rows.map((p) => {
+                const btn = {
+                    text: `${p.name} - ${p.price_etb} ETB`,
+                    callback_data: `db_${p.id}_${p.price_etb}_${p.product_type}_${p.name.replace(/ /g, "_")}`,
+                };
+                const emojiId = getEmoji('product', p.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            }),
             true
         );
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
@@ -2039,7 +2099,12 @@ if (data === "help_menu") {
         
         const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
         const buttons = buildButtons(
-            subs.rows.map((s) => ({ text: s.display_name, callback_data: `sub_${s.id}_${s.name}` }))
+            subs.rows.map((s) => {
+                const btn = { text: s.display_name, callback_data: `sub_${s.id}_${s.name}` };
+                const emojiId = getEmoji('subcategory', s.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            })
         );
         buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
         buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);

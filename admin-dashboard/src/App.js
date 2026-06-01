@@ -12,6 +12,7 @@ import Categories from "./pages/Categories";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
 import Users from "./pages/Users";
+import Emojis from "./pages/EmojiManager";
 
 function ProtectedRoute({ children, isAuthenticated }) {
   if (!isAuthenticated) {
@@ -66,6 +67,11 @@ function AppContent({ isAuthenticated, setIsAuthenticated, sidebarOpen, setSideb
             <Route path="/profile" element={
               <ProtectedRoute isAuthenticated={isAuthenticated}>
                 <Profile />
+              </ProtectedRoute>
+            } />
+            <Route path="/emojis" element={
+              <ProtectedRoute isAuthenticated={isAuthenticated}>
+                <Emojis />
               </ProtectedRoute>
             } />
           </Routes>

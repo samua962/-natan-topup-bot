@@ -75,6 +75,14 @@ export default function Navbar({ setSidebarOpen, onLogout }) {
                     <Settings size={16} className="mr-2" />
                     Settings
                   </Link>
+                  <Link 
+                    to="/emojis" 
+                    className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    onClick={() => setShowUserMenu(false)}
+                  >
+                    <Zap size={16} className="mr-2" />
+                    Emojis
+                  </Link>
                   <div className="border-t border-gray-100 my-1"></div>
                   <button 
                     onClick={() => {

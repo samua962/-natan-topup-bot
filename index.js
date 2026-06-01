@@ -43,19 +43,28 @@ adminApp.listen(PORT, () => {
     console.log("Admin API running on port", PORT);
 });
 
+// Load emoji cache from database before starting bot
+const { loadEmojiCache } = require("./bot/emoji-helper");
 
+(async () => {
+    try {
+        await loadEmojiCache();
+    } catch (error) {
+        console.error("❌ Failed to load emoji cache during startup:", error.message);
+    }
 
-const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
-  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
-  : null;
+    const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
+      : null;
 
-if (WEBHOOK_URL) {
-    bot.telegram.setWebhook(WEBHOOK_URL);
-    console.log("Telegram webhook set to:", WEBHOOK_URL);
-} else {
-    bot.launch();
-    console.log("Bot started with polling");
-}
+    if (WEBHOOK_URL) {
+        bot.telegram.setWebhook(WEBHOOK_URL);
+        console.log("Telegram webhook set to:", WEBHOOK_URL);
+    } else {
+        bot.launch();
+        console.log("Bot started with polling");
+    }
+})();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

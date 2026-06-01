@@ -39,6 +39,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { path: "/categories", name: "Categories", icon: FolderTree },
     { path: "/users", name: "Users", icon: PersonStanding}, 
     { path: "/settings", name: "Settings", icon: Settings },
+    {path: "/emojis", name: "Emojis", icon: Zap},
   ];
 
   // Mobile overlay
