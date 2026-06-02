@@ -830,7 +830,7 @@ async function showRagnerProducts(ctx) {
             return ucA - ucB;
         });
         if (products.length === 0) {
-            await safeEdit(ctx, "📭 No instant products available.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+            await safeEdit(ctx, "📭 No instant products available.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
             return;
         }
         const ucInstantEmoji = getEmoji('system', 'uc_instant');
@@ -848,12 +848,12 @@ async function showRagnerProducts(ctx) {
             productButtons.push(btn);
         }
         const buttons = buildButtons(productButtons);
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         await safeEdit(ctx, "⚡ PUBG UC Instant Delivery\n\nMax: 3850 UC\n\nSelect UC amount:", buttons);
     } catch (error) {
         console.error("Ragner products error:", error);
-        await safeEdit(ctx, "⏳ Service busy. Please try again.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+        await safeEdit(ctx, "⏳ Service busy. Please try again.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
     }
 }
 
@@ -871,8 +871,8 @@ async function showDatabaseProducts(ctx, subId) {
         );
         if (result.rows.length === 0) {
             await safeEdit(ctx, "📭 No products available right now.", [
-                [{ text: "🔙 Back", callback_data: "back" }],
-                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+                [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+                [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
             ]);
             return;
         }
@@ -889,9 +889,9 @@ async function showDatabaseProducts(ctx, subId) {
             }),
             true
         );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         
         let title = "📦 Select Product:";
         if (productType === "grospack") title = "🎁 Grospack Options:";
@@ -911,7 +911,7 @@ async function showDatabaseProducts(ctx, subId) {
         
     } catch (error) {
         console.error("Database products error:", error);
-        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
     }
 }
 
@@ -965,7 +965,7 @@ async function showCategories(ctx) {
         if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
         buttons.push([infoBtn, helpBtn]);
         
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         await safeEdit(ctx, "📂 Select Category:", buttons);
     } catch (error) {
         console.error("Show categories error:", error);
@@ -982,8 +982,8 @@ async function showWallet(ctx) {
     const buttons = [
         [{ text: "💰 Deposit", callback_data: "wallet_deposit" }],
         [{ text: "📜 Transaction History", callback_data: "wallet_history" }],
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     const emojiText = "👛 MY WALLET";
     await safeEdit(ctx, `${emojiText}\n\n💰 Balance: ${balance} ETB\n\nSelect an option below:`, buttons);
@@ -995,8 +995,8 @@ async function showWallet(ctx) {
 async function showDepositAmounts(ctx) {
     const amounts = await getDepositAmounts();
     const buttons = buildButtons(amounts.map((a) => ({ text: `${a} ETB`, callback_data: `deposit_${a}` })));
-    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+    buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+    buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
     await safeEdit(ctx, "💰 Select Deposit Amount:", buttons);
 }
 
@@ -1011,8 +1011,8 @@ async function showDepositPaymentMethods(ctx, amount) {
     if (!userState[userId]) userState[userId] = {};
     userState[userId].depositAmount = amount;
     const buttons = methods.map((m) => [{ text: m.name, callback_data: `deposit_paymethod_${m.id}_${amount}` }]);
-    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+    buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+    buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
     await safeEdit(ctx, `💰 Deposit ${amount} ETB\n\nSelect payment method:`, buttons);
 }
 
@@ -1027,7 +1027,7 @@ async function showTransactionHistory(ctx) {
             [userId]
         );
         if (history.rows.length === 0) {
-            await safeEdit(ctx, "📜 No transactions found.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+            await safeEdit(ctx, "📜 No transactions found.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
             return;
         }
         let message = "📜 TRANSACTION HISTORY\n\n";
@@ -1037,10 +1037,10 @@ async function showTransactionHistory(ctx) {
             message += `${emoji} ${t.type}: ${t.amount} ETB\n   📅 ${date}\n   📝 ${t.description || "-"}\n\n`;
         }
         message += `\nShowing last 20 transactions`;
-        await safeEdit(ctx, message, [[{ text: "🔙 Back", callback_data: "back" }]]);
+        await safeEdit(ctx, message, [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
     } catch (error) {
         console.error("Transaction history error:", error);
-        await safeEdit(ctx, "⚠️ Error loading history.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+        await safeEdit(ctx, "⚠️ Error loading history.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
     }
 }
 
@@ -1057,7 +1057,7 @@ async function showWarningMessage(ctx, product) {
         "Do you understand and wish to continue?";
     const buttons = [
         [{ text: "✅ I Understand, Continue", callback_data: `continue_${product.id}` }],
-        [{ text: "❌ Cancel", callback_data: "cancel_order" }],
+        [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }],
     ];
     await ctx.reply(warning, { parse_mode: "HTML", reply_markup: { inline_keyboard: buttons } });
 }
@@ -1100,9 +1100,9 @@ async function askForFields(ctx, product) {
         phone: "📱 Enter Phone Number:\n\nType /cancel to cancel",
         password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure\nType /cancel to cancel",
         username: "👤 Enter Telegram Username:\n\nExample: @username\nType /cancel to cancel",
-        player_id: "🎮 Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
+        player_id: "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
     };
-    await ctx.reply(prompts[firstField] || `Enter ${firstField}:`);
+    await ctx.reply(prompts[firstField] || `Enter ${firstField}:`, { parse_mode: "HTML" });
 }
 
 // =====================
@@ -1120,9 +1120,9 @@ async function processFieldInput(ctx, product, state, input) {
             phone: "📱 Enter Phone Number:\n\nType /cancel to cancel",
             password: "🔐 Enter Password:\n\n⚠️ Your credentials are safe and secure\nType /cancel to cancel",
             username: "👤 Enter Telegram Username:\n\nExample: @username\nType /cancel to cancel",
-            player_id: "🎮 Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
+            player_id: "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\nType /cancel to cancel",
         };
-        return ctx.reply(prompts[nextField] || `Enter ${nextField}:`);
+        return ctx.reply(prompts[nextField] || `Enter ${nextField}:`, { parse_mode: "HTML" });
     }
     let confirmMessage = "✅ Please confirm your information:\n\n";
     if (product.product_type === "tiktok") {
@@ -1139,7 +1139,7 @@ async function processFieldInput(ctx, product, state, input) {
         reply_markup: { 
             inline_keyboard: [
                 [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
-                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+                [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
             ] 
         },
     });
@@ -1176,9 +1176,9 @@ async function showPaymentOptions(ctx, productInfo) {
         });
     }
     
-    buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
-    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+    buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
+    buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+    buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
 
     await safeEdit(
         ctx,
@@ -1203,9 +1203,9 @@ async function showBankTransferMethods(ctx, productInfo) {
     const buttons = methods.map((m) => [
         { text: m.name, callback_data: `payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
     ]);
-    buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
-    buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-    buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+    buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
+    buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+    buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
 
     await safeEdit(ctx, "💳 SELECT PAYMENT METHOD:", buttons);
     return true;
@@ -1262,7 +1262,7 @@ async function processWalletPayment(ctx, productInfo) {
         await safeEdit(
             ctx,
             `❌ INSUFFICIENT BALANCE\n\nRequired: ${productInfo.price} ETB\nYour Balance: ${balance} ETB\n\nPlease deposit more funds.`,
-            [[{ text: "💰 Deposit Now", callback_data: "wallet_deposit" }, { text: "🔙 Back", callback_data: "back" }]]
+            [[{ text: "💰 Deposit Now", callback_data: "wallet_deposit" }, { text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]
         );
         return false;
     }
@@ -1528,8 +1528,8 @@ async function showMyOrders(ctx) {
         const buttons = orders.rows.slice(0, 10).map((o) => [
             { text: `📦 Order #${o.id} - ${o.status}`, callback_data: `order_detail_${o.id}` },
         ]);
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         await sendNewTextMessage(ctx, message, buttons);
     } catch (error) {
         console.error("My orders error:", error);
@@ -1578,8 +1578,8 @@ async function showSupport(ctx) {
     const message = `${emojiText}\n\nHaving issues? Need help?\n\n📱 Telegram: ${process.env.ADMIN_USERNAME || "Contact Admin"}\n✉️ Response Time: Usually within 1 hour\n\nSend us a message below!`;
     const buttons = [
         [{ text: "📩 Message Admin", url: `https://t.me/${process.env.ADMIN_USERNAME?.replace("@", "") || "natan_topup"}` }],
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, message, buttons);
     const username = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
@@ -1611,8 +1611,8 @@ bot.command("channel", async (ctx) => {
     const message = `${emojiText}\n\nJoin for updates, offers, and giveaways!\n\nClick below to join.`;
     const buttons = [
         [{ text: "📢 Join Our Channel", url: channelLink }],
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, message, buttons);
 });
@@ -1620,8 +1620,8 @@ bot.command("info", async (ctx) => {
     const emojiText = "ℹ️ ABOUT NATAN TOP UP";
     const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
     const buttons = [
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, message, buttons);
 });
@@ -1629,8 +1629,8 @@ bot.command("help", async (ctx) => {
     const emojiText = "❓ HELP & GUIDE";
     const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
     const buttons = [
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, message, buttons);
 });
@@ -1835,8 +1835,8 @@ async function showProductsByCategory(ctx, categoryId) {
         
         if (result.rows.length === 0) {
             await safeEdit(ctx, "📭 No products available right now.", [
-                [{ text: "🔙 Back", callback_data: "back" }],
-                [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+                [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+                [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
             ]);
             return;
         }
@@ -1853,9 +1853,9 @@ async function showProductsByCategory(ctx, categoryId) {
             }),
             true
         );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "❌ Cancel Order", callback_data: "cancel_order" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         
         let title = "📦 Select Product:";
         if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
@@ -1867,7 +1867,7 @@ async function showProductsByCategory(ctx, categoryId) {
         await safeEditMedia(ctx, categoryImage, caption, buttons);
     } catch (error) {
         console.error("Products by category error:", error);
-        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "🔙 Back", callback_data: "back" }]]);
+        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
     }
 }
 
@@ -1933,8 +1933,8 @@ bot.on("callback_query", async (ctx) => {
                                 callback_data: `sub_${s.id}_${s.name}` 
                             }))
                         );
-                        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-                        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+                        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+                        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
                         
                         const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
                         const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
@@ -2023,8 +2023,8 @@ bot.on("callback_query", async (ctx) => {
         pushHistory(userId, "main_menu");
         const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND name IN ('pubg', 'free_fire') ORDER BY position");
         const buttons = buildButtonsHorizontal(gameCategories.rows.map((g) => ({ text: g.display_name, callback_data: `cat_${g.id}` })));
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         return safeEdit(ctx, "🎮 Select Game:", buttons);
     }
  if (data === "info_menu") {
@@ -2032,8 +2032,8 @@ bot.on("callback_query", async (ctx) => {
     const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
     
     const buttons = [
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     
     try {
@@ -2060,8 +2060,8 @@ if (data === "help_menu") {
     const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
     
     const buttons = [
-        [{ text: "🔙 Back", callback_data: "back" }],
-        [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     
     try {
@@ -2106,8 +2106,8 @@ if (data === "help_menu") {
                 return btn;
             })
         );
-        buttons.push([{ text: "🔙 Back", callback_data: "back" }]);
-        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         
         const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
@@ -2151,7 +2151,7 @@ if (data === "help_menu") {
         const productInfo = { productId: id, price, name, type: "ragner", product_type: "uc_instant" };
         state.product = productInfo;
         state.step = "PLAYER";
-        return ctx.reply("🎮 Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+        return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
     }
 
     // ----- DATABASE PRODUCT -----
@@ -2997,7 +2997,7 @@ bot.on("text", async (ctx) => {
             reply_markup: { 
                 inline_keyboard: [
                     [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
-                    [{ text: "❌ Cancel Order", callback_data: "cancel_order" }]
+                    [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
                 ] 
             },
         });

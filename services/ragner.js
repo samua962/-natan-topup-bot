@@ -102,7 +102,7 @@ async function createOrder(productId, playerId) {
                     ...headers,
                     "X-Idempotency-Key": Date.now().toString()
                 },
-                timeout: 15000
+                timeout: 59000
             }
         );
         
