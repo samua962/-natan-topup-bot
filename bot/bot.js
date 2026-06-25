@@ -2422,56 +2422,75 @@ bot.on("callback_query", async (ctx) => {
     // ----- ADMIN: APPROVE ORDER -----
     if (data.startsWith("approve_")) {
         const orderId = data.split("_")[1];
-        if (processingOrders.has(orderId)) return ctx.answerCbQuery("Processing... Please wait.");
+        if (processingOrders.has(orderId)) {
+            try { await ctx.answerCbQuery("Processing... Please wait."); } catch (e) { }
+            return;
+        }
         processingOrders.add(orderId);
-        await ctx.editMessageReplyMarkup({ inline_keyboard: [[{ text: "⏳ Processing...", callback_data: "noop" }]] });
+        // Acknowledge button press immediately to prevent Telegram timeout
+        try { await ctx.answerCbQuery(); } catch (e) { }
+        try {
+            await ctx.editMessageReplyMarkup({ inline_keyboard: [[{ text: "⏳ Processing...", callback_data: "noop" }]] });
+        } catch (e) { }
         try {
             const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) { processingOrders.delete(orderId); return ctx.editMessageText("❌ Order not found"); }
+            if (!order) {
+                processingOrders.delete(orderId);
+                try { await ctx.editMessageText("❌ Order not found"); } catch (e) { }
+                return;
+            }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
             if (order.delivery_type === "ragner") {
                 const validation = await validatePlayer(order.external_product_id, order.player_id);
                 if (!validation || !validation.success) {
-                    await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" });
+                    try { await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED (Validation Failed)\n❌ Auto-delivery unavailable. Please deliver manually.\n\n👇 Click "Complete" after manual delivery`;
                     const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
-                    if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
-                    else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+                    try {
+                        if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
+                        else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+                    } catch (e) { console.error("Edit message error (approve order - validation failed):", e.message); }
                     return;
                 }
                 const result = await createOrder(order.external_product_id, order.player_id);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                    await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" });
+                    try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 UC Delivered Successfully!`;
-                    if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
-                    else await ctx.editMessageText(msg);
+                    try {
+                        if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
+                        else await ctx.editMessageText(msg);
+                    } catch (e) { console.error("Edit message error (approve order - completed):", e.message); }
                     return;
                 } else {
                     const errorMsg = result?.error || result?.details?.message || "Unknown error";
                     console.error(`Auto-delivery failed: ${errorMsg}`);
-                    await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" });
+                    try { await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED\n❌ Auto-delivery failed: ${errorMsg}\n\n👇 Click "Complete" after manual delivery`;
                     const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
-                    if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
-                    else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+                    try {
+                        if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
+                        else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+                    } catch (e) { console.error("Edit message error (approve order - delivery failed):", e.message); }
                     return;
                 }
             }
-            await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" });
+            try { await ctx.telegram.sendMessage(order.telegram_id, "✅ Payment approved! Delivery in progress.", { parse_mode: "HTML" }); } catch (e) { }
             processingOrders.delete(orderId);
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: APPROVED\n📦 Manual delivery - click "Complete" after delivering`;
             const btns = [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }], [{ text: "❌ Reject Order", callback_data: `reject_${orderId}` }]];
-            if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
-            else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+            try {
+                if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg, { reply_markup: { inline_keyboard: btns } });
+                else await ctx.editMessageText(msg, { reply_markup: { inline_keyboard: btns } });
+            } catch (e) { console.error("Edit message error (approve order - manual):", e.message); }
         } catch (error) {
             console.error("Approve error:", error);
             processingOrders.delete(orderId);
-            await ctx.editMessageText(`❌ Error processing approval: ${error.message}`);
+            try { await ctx.editMessageText(`❌ Error processing approval: ${error.message}`); } catch (e) { }
         }
         return;
     }
@@ -2479,22 +2498,32 @@ bot.on("callback_query", async (ctx) => {
     // ----- ADMIN: COMPLETE ORDER -----
     if (data.startsWith("complete_")) {
         const orderId = data.split("_")[1];
-        if (processingOrders.has(`complete_${orderId}`)) return ctx.answerCbQuery("Processing... Please wait.");
+        if (processingOrders.has(`complete_${orderId}`)) {
+            try { await ctx.answerCbQuery("Processing... Please wait."); } catch (e) { }
+            return;
+        }
         processingOrders.add(`complete_${orderId}`);
+        try { await ctx.answerCbQuery(); } catch (e) { }
         try {
             const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) { processingOrders.delete(`complete_${orderId}`); return ctx.editMessageText("❌ Order not found"); }
+            if (!order) {
+                processingOrders.delete(`complete_${orderId}`);
+                try { await ctx.editMessageText("❌ Order not found"); } catch (e) { }
+                return;
+            }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" });
+            try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
             processingOrders.delete(`complete_${orderId}`);
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 Order delivered successfully!`;
-            if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
-            else await ctx.editMessageText(msg);
+            try {
+                if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
+                else await ctx.editMessageText(msg);
+            } catch (e) { console.error("Edit message error (complete order):", e.message); }
         } catch (error) {
             console.error("Complete error:", error);
             processingOrders.delete(`complete_${orderId}`);
-            await ctx.reply("✅ Order completed successfully!");
+            try { await ctx.reply("✅ Order completed successfully!"); } catch (e) { }
         }
         return;
     }
@@ -2502,18 +2531,24 @@ bot.on("callback_query", async (ctx) => {
     // ----- ADMIN: REJECT ORDER -----
     if (data.startsWith("reject_")) {
         const orderId = data.split("_")[1];
+        try { await ctx.answerCbQuery(); } catch (e) { }
         try {
             const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-            if (!order) return ctx.editMessageText("❌ Order not found");
+            if (!order) {
+                try { await ctx.editMessageText("❌ Order not found"); } catch (e) { }
+                return;
+            }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='REJECTED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support. @aman_jj", { parse_mode: "HTML" });
+            try { await ctx.telegram.sendMessage(order.telegram_id, "❌ Payment rejected. Please contact support. @aman_jj", { parse_mode: "HTML" }); } catch (e) { }
             const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n❌ STATUS: REJECTED`;
-            if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
-            else await ctx.editMessageText(msg);
+            try {
+                if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
+                else await ctx.editMessageText(msg);
+            } catch (e) { console.error("Edit message error (reject order):", e.message); }
         } catch (error) {
             console.error("Reject error:", error);
-            await ctx.editMessageText("⚠️ Error rejecting order");
+            try { await ctx.editMessageText("⚠️ Error rejecting order"); } catch (e) { }
         }
         return;
     }
@@ -2656,14 +2691,17 @@ bot.on("text", async (ctx) => {
                 const now = new Date();
 
                 if (txTime && !isNaN(txTime.getTime())) {
-                    const requestTime = new Date();
-                    if (txTime < requestTime) {
-                        const diffMinutes = Math.round((requestTime - txTime) / (1000 * 60));
+                    // Allow transactions up to 15 minutes old
+                    const maxAgeMs = 15 * 60 * 1000;
+                    const cutoffTime = new Date(now.getTime() - maxAgeMs);
+
+                    if (txTime < cutoffTime) {
+                        const diffMinutes = Math.round((now - txTime) / (1000 * 60));
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                                `This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
+                                `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
                         } catch (e) {
-                            await ctx.reply(`This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
+                            await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
                         }
 
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID,
@@ -2674,7 +2712,7 @@ bot.on("text", async (ctx) => {
                             `TX ID: ${extractedTxId}\n` +
                             `Sender Account: ${senderAccount}\n` +
                             `Transaction time: ${verification.data.timestamp}\n` +
-                            `Payment was ${diffMinutes} minutes BEFORE deposit request`
+                            `Payment was ${diffMinutes} minutes ago`
                         );
 
                         delete userState[userId];
