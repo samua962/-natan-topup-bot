@@ -6,6 +6,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const axios = require("axios");
 const { createOrder, validatePlayer, validatePlayerOnly } = require("../services/ragner");
 const FormData = require("form-data");
+const { resolveVerifyEtBank, verifyPaymentWithVerifyEt } = require("../services/verify-et");
 
 const userState = {};
 const processingOrders = new Set();
@@ -62,9 +63,9 @@ function resolveShegerPayProvider(methodName) {
 // =====================
 function parseShegerTimestamp(timestampStr) {
     if (!timestampStr) return null;
-    
+
     console.log("📅 Parsing timestamp:", timestampStr);
-    
+
     try {
         // Format 1: "DD-MM-YYYY HH:MM:SS" (Telebirr)
         // Example: "26-04-2026 15:35:46"
@@ -74,7 +75,7 @@ function parseShegerTimestamp(timestampStr) {
             console.log("✅ Parsed as DD-MM-YYYY HH:MM:SS:", date);
             return date;
         }
-        
+
         // Format 2: "M/D/YYYY, HH:MM:SS AM/PM" (CBE)
         // Example: "5/11/2026, 11:15:00 AM"
         if (/^\d{1,2}\/\d{1,2}\/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+(AM|PM)$/i.test(timestampStr)) {
@@ -89,7 +90,7 @@ function parseShegerTimestamp(timestampStr) {
                 return date;
             }
         }
-        
+
         // Format 3: "MM/DD/YYYY, HH:MM:SS AM/PM" (Alternative CBE)
         // Example: "05/11/2026, 11:15:00 AM"
         if (/^\d{2}\/\d{2}\/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+(AM|PM)$/i.test(timestampStr)) {
@@ -122,10 +123,10 @@ function parseShegerTimestamp(timestampStr) {
             console.log("✅ Parsed with JavaScript Date:", jsDate);
             return jsDate;
         }
-        
+
         console.error("❌ Could not parse timestamp:", timestampStr);
         return null;
-        
+
     } catch (error) {
         console.error("❌ Timestamp parsing error:", error.message);
         return null;
@@ -253,6 +254,45 @@ async function verifyPaymentWithTxId(provider, transactionId, expectedAmount, me
 }
 
 // =====================
+// 🟢 UNIFIED PAYMENT VERIFICATION WRAPPER (Feature-flag routing)
+// =====================
+/**
+ * Routes payment verification to Verify.ET or ShegerPay based on VERIFY_ET_ENABLED flag.
+ *
+ * @param {string} methodName        - Human-readable payment method name (e.g. "Bank of Abyssinia")
+ * @param {string} transactionId     - Transaction / reference ID extracted from screenshot
+ * @param {number} expectedAmount    - Amount the user was supposed to pay (ETB)
+ * @param {Object} [options={}]
+ * @param {string} [options.settlementAccount]       - Full merchant account number (used for suffix extraction)
+ * @param {string} [options.senderAccount]           - BOA sender account (ShegerPay path)
+ * @param {string} [options.expectedRecipientAccount]- Expected recipient account (ShegerPay path)
+ * @param {string} [options.phone]                   - Sender phone for CBEBirr (Verify.ET path)
+ * @returns {Promise<{verified: boolean, data?: Object, error?: string}>}
+ */
+async function verifyPayment(methodName, transactionId, expectedAmount, options = {}) {
+    if (process.env.VERIFY_ET_ENABLED === "true") {
+        const bank = resolveVerifyEtBank(methodName);
+        if (!bank) {
+            return { verified: false, error: "Payment provider could not be determined" };
+        }
+        return verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, {
+            settlementAccount: options.settlementAccount,
+            phone: options.phone,
+        });
+    }
+    // ShegerPay path (unchanged)
+    const provider = resolveShegerPayProvider(methodName);
+    return verifyPaymentWithTxId(
+        provider,
+        transactionId,
+        expectedAmount,
+        "Natan Top Up",
+        options.expectedRecipientAccount,
+        options.senderAccount
+    );
+}
+
+// =====================
 // 🟢 PRICE ROUNDING FUNCTION
 // =====================
 function roundPrice(price) {
@@ -273,10 +313,10 @@ async function extractTxIdFromImage(imageFileId) {
     try {
         const fileInfo = await bot.telegram.getFile(imageFileId);
         const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileInfo.file_path}`;
-        
+
         const imageResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
         const base64Image = Buffer.from(imageResponse.data).toString('base64');
-        
+
         const response = await axios.post(
             `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
             {
@@ -290,30 +330,33 @@ async function extractTxIdFromImage(imageFileId) {
                 timeout: 15000
             }
         );
-        
+
         const textAnnotations = response.data?.responses?.[0]?.textAnnotations;
-        
+
         if (!textAnnotations || textAnnotations.length === 0) {
             console.log("❌ No text found in image");
             return { txId: null, fullText: "" };
         }
-        
+
         const fullText = textAnnotations[0]?.description || "";
         console.log("📝 Full detected text:");
         console.log(fullText);
         console.log("--- END OF TEXT ---");
-        
+
         const skipWords = [
             'successful', 'download', 'share', 'transfer', 'money', 'prizes',
             'million', 'etb', 'birr', 'transaction', 'time', 'type', 'number',
             'abou', 'ama', 'manuel', 'hailu', 'batru', 'finished', 'play',
-            'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr', 'kaafimf'
+            'tele', 'code', 'plav', 'am', 'pm', 'qrcode', 'qr', 'kaafimf',
+            'ethiopia', 'zemen', 'gebeya', 'digitally', 'shops', 'amanuel',
+            'samuel', 'tesfaye', 'desalegn', 'completed', 'processing',
+            'where', 'next', 'cancel', 'send', 'favorites', 'recents', 'contacts'
         ];
-        
+
         function cleanTxCandidate(raw) {
             return raw.replace(/[^A-Za-z0-9]/g, '').trim();
         }
-        
+
         function isValidTxCandidate(candidate, allowNumeric = false) {
             if (!candidate) return false;
             const cleaned = cleanTxCandidate(candidate);
@@ -322,9 +365,9 @@ async function extractTxIdFromImage(imageFileId) {
             if (!allowNumeric && !/[A-Za-z]/.test(cleaned)) return false;
             return true;
         }
-        
+
         let txId = null;
-        
+
         // Strategy 1: Look for labeled transaction IDs
         console.log("🔍 Strategy 1: Looking for labeled TX IDs...");
         const labelPatterns = [
@@ -336,8 +379,10 @@ async function extractTxIdFromImage(imageFileId) {
             /Receipt\s*(?:No|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
             /FT[:\s#]*([A-Za-z0-9]{6,30})/i,
             /Trx\s*(?:No|ID|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
+            // Telebirr: standalone alphanumeric IDs like DFP79MDWL5, BCA12XYZQ3
+            /\b([A-Z]{2,4}\d{2,4}[A-Z0-9]{4,10})\b/,
         ];
-        
+
         for (const pattern of labelPatterns) {
             const match = fullText.match(pattern);
             if (match && match[1]) {
@@ -350,19 +395,19 @@ async function extractTxIdFromImage(imageFileId) {
                 }
             }
         }
-        
+
         // Strategy 2: Look for lines containing transaction keywords
         if (!txId) {
             console.log("🔍 Strategy 2: Looking for transaction lines...");
             const lines = fullText.split('\n');
             for (const line of lines) {
                 const lowerLine = line.toLowerCase();
-                if (lowerLine.includes('transaction') || lowerLine.includes('reference') || 
+                if (lowerLine.includes('transaction') || lowerLine.includes('reference') ||
                     lowerLine.includes('receipt') || lowerLine.includes('ft') ||
                     lowerLine.includes('trx') || lowerLine.includes('txn')) {
-                    
+
                     console.log("📄 Examining line:", line);
-                    
+
                     const codeMatch = line.match(/([A-Za-z0-9]{8,30})/);
                     if (codeMatch && !skipWords.includes(codeMatch[1].toLowerCase())) {
                         txId = codeMatch[1];
@@ -372,7 +417,7 @@ async function extractTxIdFromImage(imageFileId) {
                 }
             }
         }
-        
+
         // Strategy 2.5: Look for the NEXT line or same line after a transaction label
         if (!txId) {
             console.log("🔍 Strategy 2.5: Looking for ID on line after transaction label...");
@@ -381,24 +426,24 @@ async function extractTxIdFromImage(imageFileId) {
                 const lineText = lines[i].trim();
                 const lowerLine = lineText.toLowerCase();
                 const isTransferLabel = lowerLine.includes('transfer id') || lowerLine.includes('transfer-id');
-                if (lowerLine.includes('transaction number') || 
+                if (lowerLine.includes('transaction number') ||
                     lowerLine.includes('transaction id') ||
                     lowerLine.includes('transaction reference') ||
                     lowerLine.includes('receipt') ||
                     lowerLine.includes('lakkoofsa sochii') ||
                     lowerLine.includes('within boa') ||
                     lowerLine.includes('birhan') ||
-                      lowerLine.includes('2026') ||
-                       lowerLine.includes('VAT invoice NO):') ||
-                        lowerLine.includes('setteld amount') ||
-                      
+                    lowerLine.includes('2026') ||
+                    lowerLine.includes('VAT invoice NO):') ||
+                    lowerLine.includes('setteld amount') ||
+
                     lowerLine.includes('የግብይት ቁጥር') ||
                     isTransferLabel ||
                     lowerLine.includes('transaction no') ||
                     lowerLine.includes('transaction to')) {
-                    
+
                     console.log("📄 Found label line:", lineText);
-                    
+
                     if (isTransferLabel) {
                         const sameLineMatch = lineText.match(/transfer[-\s]*id[:\s]*([A-Za-z0-9]{6,30})/i);
                         if (sameLineMatch && sameLineMatch[1]) {
@@ -410,20 +455,22 @@ async function extractTxIdFromImage(imageFileId) {
                             }
                         }
                     }
-                    
-                    for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+
+                    for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
                         const nextLine = lines[j].trim();
-                        if (nextLine && !skipWords.some(w => nextLine.toLowerCase().includes(w))) {
-                            console.log("   Checking line", j + ":", nextLine);
-                            const codeMatch = nextLine.match(/([A-Z0-9]{2,4}\s*\d{2,4}[A-Z0-9]{2,8}|[A-Z0-9]{8,20})/i);
-                            if (codeMatch) {
-                                const candidate = cleanTxCandidate(codeMatch[1]);
-                                const allowNumeric = isTransferLabel;
-                                if (isValidTxCandidate(candidate, allowNumeric)) {
-                                    txId = candidate;
-                                    console.log("✅ Found TX ID on line after label:", txId, "(line index:", j, ")");
-                                    break;
-                                }
+                        // Skip empty lines, lines with Ethiopian characters, or known skip words
+                        if (!nextLine) continue;
+                        if (/[\u1200-\u137F]/.test(nextLine)) continue; // Ethiopic unicode block
+                        if (skipWords.some(w => nextLine.toLowerCase().includes(w))) continue;
+                        console.log("   Checking line", j + ":", nextLine);
+                        const codeMatch = nextLine.match(/([A-Z0-9]{2,4}\s*\d{2,4}[A-Z0-9]{2,8}|[A-Z0-9]{8,20})/i);
+                        if (codeMatch) {
+                            const candidate = cleanTxCandidate(codeMatch[1]);
+                            const allowNumeric = isTransferLabel;
+                            if (isValidTxCandidate(candidate, allowNumeric)) {
+                                txId = candidate;
+                                console.log("✅ Found TX ID on line after label:", txId, "(line index:", j, ")");
+                                break;
                             }
                         }
                     }
@@ -431,12 +478,12 @@ async function extractTxIdFromImage(imageFileId) {
                 }
             }
         }
-        
+
         // Strategy 3: Pattern matching for IDs with mixed letters and numbers
         if (!txId) {
             console.log("🔍 Strategy 3: Pattern matching...");
             const items = fullText.split(/[\n\s]+/);
-            
+
             for (const item of items) {
                 const cleaned = item.trim();
                 if (cleaned.length < 8 || cleaned.length > 25) continue;
@@ -447,7 +494,7 @@ async function extractTxIdFromImage(imageFileId) {
                 if (/ETB/i.test(cleaned) || /^[-]?\d+\.\d{2}$/.test(cleaned)) continue;
                 if (/^251\d+$/.test(cleaned) || /^09\d+$/.test(cleaned) || /^\d{10,}$/.test(cleaned)) continue;
                 if (/\/s$/i.test(cleaned)) continue;
-                
+
                 if (/[A-Za-z]/.test(cleaned) && /\d/.test(cleaned) && cleaned.length >= 8) {
                     txId = cleaned;
                     console.log("✅ Found TX ID via mixed alphanumeric:", txId);
@@ -455,7 +502,7 @@ async function extractTxIdFromImage(imageFileId) {
                 }
             }
         }
-        
+
         // Strategy 4: Last resort
         if (!txId) {
             console.log("🔍 Strategy 4: Last resort search...");
@@ -471,15 +518,15 @@ async function extractTxIdFromImage(imageFileId) {
                 }
             }
         }
-        
+
         if (!txId) {
             console.log("❌ Could not identify transaction ID in text");
             return { txId: null, fullText };
         }
-        
+
         // Final cleanup
         txId = txId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 40);
-        
+
         // Check if "FT" prefix is nearby (for BOA)
         if (!txId.toUpperCase().startsWith('FT') && fullText) {
             const escapedTxId = txId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -490,18 +537,18 @@ async function extractTxIdFromImage(imageFileId) {
             }
             const lines = fullText.split('\n');
             for (let i = 0; i < lines.length; i++) {
-                if (lines[i].includes(txId) && i > 0 && lines[i-1].toUpperCase().includes('FT')) {
+                if (lines[i].includes(txId) && i > 0 && lines[i - 1].toUpperCase().includes('FT')) {
                     txId = 'FT' + txId;
                     console.log("✅ Added FT prefix from previous line:", txId);
                     break;
                 }
             }
         }
-        
+
         console.log("🧹 Final TX ID:", txId);
-        
+
         return { txId, fullText };
-        
+
     } catch (error) {
         console.error("❌ Cloud Vision API error:", error.response?.data || error.message);
         return { txId: null, fullText: "" };
@@ -864,7 +911,7 @@ async function showDatabaseProducts(ctx, subId) {
     try {
         const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
         const subcategory = subResult.rows[0];
-        
+
         const result = await db.query(
             `SELECT * FROM products WHERE subcategory_id = $1 AND is_active = true ORDER BY position ASC, id ASC`,
             [subId]
@@ -892,14 +939,14 @@ async function showDatabaseProducts(ctx, subId) {
         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
         buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-        
+
         let title = "📦 Select Product:";
         if (productType === "grospack") title = "🎁 Grospack Options:";
         if (productType === "subscription") title = "👑 Subscription Plans:";
         if (productType === "free_fire") title = "🔥 Free Fire Diamonds:";
         if (productType === "tiktok") title = "📱 TikTok Coins:";
         if (productType === "uc_manual") title = "📦 PUBG UC Manual:";
-        
+
         let displayImage = subcategory?.image_url;
         if (!displayImage && subcategory?.category_id) {
             const catResult = await db.query("SELECT image_url FROM categories WHERE id = $1", [subcategory.category_id]);
@@ -908,7 +955,7 @@ async function showDatabaseProducts(ctx, subId) {
         const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው ።\n\nየሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው ።\n\n";
         const caption = `${workingHoursNote}${title}`;
         await safeEditMedia(ctx, displayImage, caption, buttons);
-        
+
     } catch (error) {
         console.error("Database products error:", error);
         await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
@@ -931,40 +978,40 @@ async function showCategories(ctx) {
                 return btn;
             })
         );
-        
+
         const myOrdersBtn = { text: "My Orders", callback_data: "myorders_back" };
         const myOrdersEmoji = getEmoji('system', 'orders');
         if (myOrdersEmoji) myOrdersBtn.icon_custom_emoji_id = myOrdersEmoji;
-        
+
         const myWalletBtn = { text: "My Wallet", callback_data: "show_wallet" };
         const myWalletEmoji = getEmoji('system', 'wallet');
         if (myWalletEmoji) myWalletBtn.icon_custom_emoji_id = myWalletEmoji;
-        
+
         buttons.push([myOrdersBtn, myWalletBtn]);
-        
+
         const getTicketBtn = { text: "Get Ticket", callback_data: "giveaway_ticket" };
         const ticketEmoji = getEmoji('system', 'ticket');
         if (ticketEmoji) getTicketBtn.icon_custom_emoji_id = ticketEmoji;
         buttons.push([getTicketBtn]);
-        
+
         const supportBtn = { text: "Support", callback_data: "support_menu" };
         const supportEmoji = getEmoji('system', 'support');
         if (supportEmoji) supportBtn.icon_custom_emoji_id = supportEmoji;
-        
+
         const channelBtn = { text: "Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` };
         const channelEmoji = getEmoji('system', 'channel');
         if (channelEmoji) channelBtn.icon_custom_emoji_id = channelEmoji;
         buttons.push([supportBtn, channelBtn]);
-        
+
         const infoBtn = { text: "Info", callback_data: "info_menu" };
         const infoEmoji = getEmoji('system', 'info');
         if (infoEmoji) infoBtn.icon_custom_emoji_id = infoEmoji;
-        
+
         const helpBtn = { text: "Help", callback_data: "help_menu" };
         const helpEmoji = getEmoji('system', 'help');
         if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
         buttons.push([infoBtn, helpBtn]);
-        
+
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         await safeEdit(ctx, "📂 Select Category:", buttons);
     } catch (error) {
@@ -1068,9 +1115,9 @@ async function showWarningMessage(ctx, product) {
 async function askForFields(ctx, product) {
     const state = userState[ctx.from.id];
     const productType = product.product_type;
-    
+
     const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
-    
+
     if (pubgTypes.includes(productType)) {
         state.requiredFields = ["player_id"];
     } else if (productType === "tiktok") {
@@ -1080,11 +1127,11 @@ async function askForFields(ctx, product) {
     } else {
         state.requiredFields = ["player_id"];
     }
-    
+
     state.currentField = 0;
     state.collectedData = {};
     state.step = "PLAYER";
-    
+
     state.product = {
         productId: product.id,
         price: product.price_etb,
@@ -1093,7 +1140,7 @@ async function askForFields(ctx, product) {
         product_type: productType,
         fullProduct: product
     };
-    
+
     const firstField = state.requiredFields[0];
     const prompts = {
         email: "📧 Enter TikTok Email:\n\nType /cancel to cancel",
@@ -1136,11 +1183,11 @@ async function processFieldInput(ctx, product, state, input) {
     state.step = "CONFIRM";
     await ctx.reply(confirmMessage, {
         parse_mode: "HTML",
-        reply_markup: { 
+        reply_markup: {
             inline_keyboard: [
                 [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
                 [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
-            ] 
+            ]
         },
     });
 }
@@ -1151,31 +1198,31 @@ async function processFieldInput(ctx, product, state, input) {
 async function showPaymentOptions(ctx, productInfo) {
     const balance = await getWalletBalance(ctx.from.id);
     const methods = await getPaymentMethods();
-    
+
     const userId = ctx.from.id;
     if (!userState[userId]) userState[userId] = {};
     userState[userId].productInfo = productInfo;
 
     const buttons = [];
-    
+
     // Add Wallet Payment option
-    buttons.push([{ 
-        text: `👛 Wallet Payment (${balance} ETB)`, 
-        callback_data: `unified_pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` 
+    buttons.push([{
+        text: `👛 Wallet Payment (${balance} ETB)`,
+        callback_data: `unified_pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
     }]);
-    
+
     // Add all bank transfer methods
     if (methods.length > 0) {
         methods.forEach((m) => {
             buttons.push([
-                { 
-                    text: m.name, 
-                    callback_data: `unified_payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` 
+                {
+                    text: m.name,
+                    callback_data: `unified_payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
                 }
             ]);
         });
     }
-    
+
     buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
     buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
@@ -1306,13 +1353,13 @@ async function processWalletPayment(ctx, productInfo) {
             VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7, $8)
             RETURNING id`,
             [userId, ctx.from.username || null, productInfo.name, productInfo.price, "manual",
-             productInfo.playerId || null, productInfo.playerName || null,
-             JSON.stringify(productInfo.userInputs || {})]
+                productInfo.playerId || null, productInfo.playerName || null,
+                JSON.stringify(productInfo.userInputs || {})]
         );
         const orderId = result.rows[0].id;
         await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Purchase: ${productInfo.name} (Pending Approval)`);
         await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending admin approval.\n\nYou will be notified when approved.`, []);
-        
+
         let adminMessage = `🟡 WALLET PURCHASE (PENDING APPROVAL)\n\n━━━━━━━━━━━━━━━━━━━━\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n💳 Payment Method: Wallet Balance\n\n`;
         if (productInfo.playerId) adminMessage += `🎮 Player ID: ${productInfo.playerId}\n`;
         if (productInfo.playerName) adminMessage += `👤 Player Name: ${productInfo.playerName}\n`;
@@ -1348,51 +1395,51 @@ async function showMainMenu(ctx) {
                 return btn;
             })
         );
-        
+
         // System buttons with emoji IDs
         const myOrdersBtn = { text: "My Orders", callback_data: "myorders_back" };
         const myOrdersEmoji = getEmoji('system', 'orders');
         if (myOrdersEmoji) myOrdersBtn.icon_custom_emoji_id = myOrdersEmoji;
-        
+
         const myWalletBtn = { text: "My Wallet", callback_data: "show_wallet" };
         const myWalletEmoji = getEmoji('system', 'wallet');
         if (myWalletEmoji) myWalletBtn.icon_custom_emoji_id = myWalletEmoji;
-        
+
         buttons.push([myOrdersBtn, myWalletBtn]);
-        
+
         const getTicketBtn = { text: "Get Ticket", callback_data: "giveaway_ticket" };
         const ticketEmoji = getEmoji('system', 'ticket');
         if (ticketEmoji) getTicketBtn.icon_custom_emoji_id = ticketEmoji;
         buttons.push([getTicketBtn]);
-        
+
         const supportBtn = { text: "Support", callback_data: "support_menu" };
         const supportEmoji = getEmoji('system', 'support');
         if (supportEmoji) supportBtn.icon_custom_emoji_id = supportEmoji;
-        
+
         const channelBtn = { text: "Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` };
         const channelEmoji = getEmoji('system', 'channel');
         if (channelEmoji) channelBtn.icon_custom_emoji_id = channelEmoji;
         buttons.push([supportBtn, channelBtn]);
-        
+
         const infoBtn = { text: "Info", callback_data: "info_menu" };
         const infoEmoji = getEmoji('system', 'info');
         if (infoEmoji) infoBtn.icon_custom_emoji_id = infoEmoji;
-        
+
         const helpBtn = { text: "Help", callback_data: "help_menu" };
         const helpEmoji = getEmoji('system', 'help');
         if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
         buttons.push([infoBtn, helpBtn]);
-        
+
         const mainMenuBanner = await getMainMenuBanner();
         const caption = `🎮 Natan Top Up\n\n⚡ Fast • Secure • Reliable\n\nSelect a service below 👇`;
-        
+
         if (ctx.callbackQuery && ctx.callbackQuery.message) {
             await safeEditMedia(ctx, mainMenuBanner, caption, buttons);
         } else {
-            await ctx.replyWithPhoto(mainMenuBanner, { 
-                caption: caption, 
-                parse_mode: "HTML", 
-                reply_markup: { inline_keyboard: buttons } 
+            await ctx.replyWithPhoto(mainMenuBanner, {
+                caption: caption,
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
             });
         }
     } catch (error) {
@@ -1679,7 +1726,7 @@ async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminI
         // Reduced delay to speed up broadcast (30ms instead of 100ms)
         const BATCH_DELAY = 30; // milliseconds between each message
         const BATCH_SIZE = 50;  // Send in batches of 50 to allow faster completion
-        
+
         // Process in batches
         for (let batch = 0; batch < userIds.length; batch += BATCH_SIZE) {
             const batchUsers = userIds.slice(batch, batch + BATCH_SIZE);
@@ -1710,8 +1757,8 @@ async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminI
                         return { success: true, userId };
                     }
                 } catch (error) {
-                    return { 
-                        success: false, 
+                    return {
+                        success: false,
                         userId,
                         error: error.message,
                         code: error.code
@@ -1721,7 +1768,7 @@ async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminI
 
             // Execute batch in parallel
             const results = await Promise.all(batchPromises);
-            
+
             // Count results
             for (const result of results) {
                 if (result.success) {
@@ -1744,7 +1791,7 @@ async function broadcastAnnouncement(bot, messageText, imageFileIds = [], adminI
         }
 
         console.log(`📊 Broadcast complete: ${successCount} sent, ${failureCount} failed`);
-        
+
         // Notify admin of completion
         if (adminId) {
             try {
@@ -1827,12 +1874,12 @@ async function showProductsByCategory(ctx, categoryId) {
     try {
         const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
         const category = categoryResult.rows[0];
-        
+
         const result = await db.query(
             `SELECT * FROM products WHERE category_id = $1 AND is_active = true ORDER BY position ASC, id ASC`,
             [categoryId]
         );
-        
+
         if (result.rows.length === 0) {
             await safeEdit(ctx, "📭 No products available right now.", [
                 [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
@@ -1840,7 +1887,7 @@ async function showProductsByCategory(ctx, categoryId) {
             ]);
             return;
         }
-        
+
         const buttons = buildButtons(
             result.rows.map((p) => {
                 const btn = {
@@ -1856,14 +1903,14 @@ async function showProductsByCategory(ctx, categoryId) {
         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
         buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-        
+
         let title = "📦 Select Product:";
         if (result.rows[0]?.product_type === "free_fire") title = "🔥 Free Fire Diamonds:";
-        
+
         const categoryImage = category?.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         const workingHoursNote = "⏰ working hour 3:00 - 5:00 local time.\n\n⏰ የስራ ሰዓት ከ ጠዋት 3:00 ስዓት - ማታ 5:30 ስዓት ነው።\n\n  የሁላችሁንም ኦርደር ማስተናግደው በነዚ ስዓት ብቻ ነው።\n\n";
         const caption = `${workingHoursNote}${title}`;
-        
+
         await safeEditMedia(ctx, categoryImage, caption, buttons);
     } catch (error) {
         console.error("Products by category error:", error);
@@ -1900,13 +1947,13 @@ bot.on("callback_query", async (ctx) => {
         clearHistory(userId);
         return showMainMenu(ctx);
     }
-    
+
     // ----- BACK BUTTON -----
     if (data === "back") {
         const prev = getPreviousScreen(userId);
         if (prev) {
             popHistory(userId);
-            
+
             if (prev.screen === "categories") {
                 return showCategories(ctx);
             }
@@ -1918,27 +1965,27 @@ bot.on("callback_query", async (ctx) => {
             if (prev.screen === "subcategories") {
                 if (prev.data?.categoryId) {
                     const categoryResult = await db.query(
-                        "SELECT * FROM categories WHERE id = $1 AND is_active = true", 
+                        "SELECT * FROM categories WHERE id = $1 AND is_active = true",
                         [prev.data.categoryId]
                     );
                     const category = categoryResult.rows[0];
                     if (category) {
                         const subs = await db.query(
-                            "SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", 
+                            "SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position",
                             [prev.data.categoryId]
                         );
                         const buttons = buildButtons(
-                            subs.rows.map((s) => ({ 
-                                text: s.display_name, 
-                                callback_data: `sub_${s.id}_${s.name}` 
+                            subs.rows.map((s) => ({
+                                text: s.display_name,
+                                callback_data: `sub_${s.id}_${s.name}`
                             }))
                         );
                         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
                         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-                        
+
                         const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
                         const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
-                        
+
                         return safeEditMedia(ctx, categoryImage, caption, buttons);
                     }
                 }
@@ -1948,7 +1995,7 @@ bot.on("callback_query", async (ctx) => {
             if (prev.screen === "myorders") return showMyOrders(ctx);
             if (prev.screen === "support") return showSupport(ctx);
             if (prev.screen === "main_menu") return showMainMenu(ctx);
-            
+
             return showMainMenu(ctx);
         }
         return showMainMenu(ctx);
@@ -2027,62 +2074,62 @@ bot.on("callback_query", async (ctx) => {
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
         return safeEdit(ctx, "🎮 Select Game:", buttons);
     }
- if (data === "info_menu") {
-    const emojiText = "ℹ️ ABOUT NATAN TOP UP";
-    const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
-    
-    const buttons = [
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
-        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
-    ];
-    
-    try {
-        if (ctx.callbackQuery.message.photo) {
-            return ctx.editMessageCaption(message, { 
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: buttons }
-            });
-        } else {
-            return ctx.editMessageText(message, { 
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: buttons }
-            });
-        }
-    } catch (e) {
-        return ctx.reply(message, { 
-            parse_mode: "HTML",
-            reply_markup: { inline_keyboard: buttons }
-        });
-    }
-}
-if (data === "help_menu") {
-    const emojiText = "❓ HELP & GUIDE";
-    const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
-    
-    const buttons = [
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
-        [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
-    ];
-    
-    try {
-        if (ctx.callbackQuery.message.photo) {
-            return ctx.editMessageCaption(message, { 
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: buttons }
-            });
-        } else {
-            return ctx.editMessageText(message, { 
+    if (data === "info_menu") {
+        const emojiText = "ℹ️ ABOUT NATAN TOP UP";
+        const message = `${emojiText}\n\nVersion: 2.0.0\nPlatform: Telegram Bot\n\nFEATURES:\n✅ 24/7 Service\n✅ Instant & Manual Delivery\n✅ Secure Payment\n✅ Order Tracking\n✅ Customer Support\n\nSUPPORTED:\n🎮 PUBG UC\n🎮 Free Fire\n📱 TikTok Coins\n\nContact: ${process.env.ADMIN_USERNAME || "@admin"}\n\nThank you! 🚀`;
+
+        const buttons = [
+            [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+            [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
+        ];
+
+        try {
+            if (ctx.callbackQuery.message.photo) {
+                return ctx.editMessageCaption(message, {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: buttons }
+                });
+            } else {
+                return ctx.editMessageText(message, {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: buttons }
+                });
+            }
+        } catch (e) {
+            return ctx.reply(message, {
                 parse_mode: "HTML",
                 reply_markup: { inline_keyboard: buttons }
             });
         }
-    } catch (e) {
-        return ctx.reply(message, { 
-            parse_mode: "HTML",
-            reply_markup: { inline_keyboard: buttons }
-        });
     }
-}
+    if (data === "help_menu") {
+        const emojiText = "❓ HELP & GUIDE";
+        const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+
+        const buttons = [
+            [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
+            [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
+        ];
+
+        try {
+            if (ctx.callbackQuery.message.photo) {
+                return ctx.editMessageCaption(message, {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: buttons }
+                });
+            } else {
+                return ctx.editMessageText(message, {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: buttons }
+                });
+            }
+        } catch (e) {
+            return ctx.reply(message, {
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: buttons }
+            });
+        }
+    }
 
     // ----- ORDER DETAIL -----
     if (data.startsWith("order_detail_")) {
@@ -2096,7 +2143,7 @@ if (data === "help_menu") {
         const categoryResult = await db.query("SELECT * FROM categories WHERE id = $1 AND is_active = true", [categoryId]);
         const category = categoryResult.rows[0];
         if (!category) return ctx.reply("❌ Category not found.");
-        
+
         const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
         const buttons = buildButtons(
             subs.rows.map((s) => {
@@ -2108,15 +2155,15 @@ if (data === "help_menu") {
         );
         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-        
+
         const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
         const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
-        
+
         if (subs.rows.length === 0) {
             pushHistory(userId, "categories");
             return showProductsByCategory(ctx, categoryId);
         }
-        
+
         pushHistory(userId, "categories");
         await safeEditMedia(ctx, categoryImage, caption, buttons);
         return;
@@ -2125,23 +2172,23 @@ if (data === "help_menu") {
     // ----- SUBCATEGORY -----
     if (data.startsWith("sub_")) {
         const [, subId, name] = data.split("_");
-        
+
         const subResult = await db.query("SELECT * FROM subcategories WHERE id = $1", [subId]);
         const subcategory = subResult.rows[0];
-        
-        pushHistory(userId, "subcategories", { 
-            categoryId: subcategory?.category_id 
+
+        pushHistory(userId, "subcategories", {
+            categoryId: subcategory?.category_id
         });
-        
+
         if (name === "instant" || name === "uc_instant") {
             state.mode = "instant";
             return showRagnerProducts(ctx);
         }
-        
+
         state.mode = "database";
         return showDatabaseProducts(ctx, subId);
     }
-    
+
     // ----- RAGNER PRODUCT -----
     if (data.startsWith("ragner_")) {
         const parts = data.split("_");
@@ -2261,7 +2308,7 @@ if (data === "help_menu") {
         await showPaymentDetails(ctx, selectedMethod, productInfo);
         return;
     }
-    
+
     // ----- PAYMENT METHOD SELECTION (Bank Transfer) -----
     if (data.startsWith("payment_")) {
         const parts = data.split("_");
@@ -2301,8 +2348,8 @@ if (data === "help_menu") {
                 playerId: state.playerId,
                 playerName: state.playerName,
                 userInputs: state.collectedData,
-                type: state.product.type,                 
-                product_type: state.product.product_type  
+                type: state.product.type,
+                product_type: state.product.product_type
             };
             return showPaymentOptions(ctx, productInfo);
         }
@@ -2318,21 +2365,39 @@ if (data === "help_menu") {
     // ----- ADMIN: APPROVE DEPOSIT -----
     if (data.startsWith("approve_deposit_")) {
         const depositId = data.split("_")[2];
-        if (processingOrders.has(`deposit_${depositId}`)) return ctx.answerCbQuery("Processing... Please wait.");
+        if (processingOrders.has(`deposit_${depositId}`)) {
+            try { await ctx.answerCbQuery("Processing... Please wait."); } catch (e) { }
+            return;
+        }
         processingOrders.add(`deposit_${depositId}`);
         try {
+            // Acknowledge the button press first — prevents "query too old" errors
+            try { await ctx.answerCbQuery(); } catch (e) { }
+
             const deposit = (await db.query("SELECT * FROM deposit_requests WHERE id = $1", [depositId])).rows[0];
-            if (!deposit) { processingOrders.delete(`deposit_${depositId}`); return ctx.editMessageCaption("❌ Deposit request not found"); }
+            if (!deposit) {
+                processingOrders.delete(`deposit_${depositId}`);
+                try { await ctx.editMessageCaption("❌ Deposit request not found"); } catch (e) { }
+                return;
+            }
             const depositAmount = parseFloat(deposit.amount);
             await db.query("UPDATE deposit_requests SET status = 'APPROVED', processed_at = CURRENT_TIMESTAMP WHERE id = $1", [depositId]);
             await updateWalletBalance(deposit.telegram_id, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB`);
-            await ctx.telegram.sendMessage(deposit.telegram_id, `✅ DEPOSIT APPROVED!\n\n💰 Amount: ${depositAmount} ETB has been added to your wallet.`, { parse_mode: "HTML" });
-            await ctx.editMessageCaption(`✅ Deposit #${depositId} - APPROVED\nAmount: ${depositAmount} ETB\nAdded to user's wallet`);
+            try {
+                await ctx.telegram.sendMessage(deposit.telegram_id, `✅ DEPOSIT APPROVED!\n\n💰 Amount: ${depositAmount} ETB has been added to your wallet.`, { parse_mode: "HTML" });
+            } catch (e) {
+                console.error("Failed to notify user of deposit approval:", e.message);
+            }
+            try {
+                await ctx.editMessageCaption(`✅ Deposit #${depositId} - APPROVED\nAmount: ${depositAmount} ETB\nAdded to user's wallet`);
+            } catch (e) {
+                console.error("Failed to edit deposit approval message:", e.message);
+            }
             processingOrders.delete(`deposit_${depositId}`);
         } catch (error) {
             console.error("Approve deposit error:", error);
             processingOrders.delete(`deposit_${depositId}`);
-            await ctx.editMessageCaption("⚠️ Error processing deposit approval");
+            try { await ctx.editMessageCaption("⚠️ Error processing deposit approval"); } catch (e) { }
         }
         return;
     }
@@ -2502,7 +2567,7 @@ bot.on("text", async (ctx) => {
             try {
                 // Notify user that broadcast is starting
                 await ctx.reply("🔄 Broadcasting announcement to all users...\n\nThis may take a minute. Please wait...", { parse_mode: "HTML" });
-                
+
                 // Proceed with broadcast
                 const result = await broadcastAnnouncement(
                     bot,
@@ -2510,10 +2575,10 @@ bot.on("text", async (ctx) => {
                     state.announcementData.images,
                     userId
                 );
-                
+
                 const announcement = state.announcementData.messageText;
                 const imageCount = state.announcementData.images.length;
-                
+
                 await ctx.reply(
                     `✅ ANNOUNCEMENT BROADCAST COMPLETE!\n\n` +
                     `📢 Successfully sent to: <b>${result.successCount}</b> users\n` +
@@ -2559,7 +2624,11 @@ bot.on("text", async (ctx) => {
         }
 
         const verifyingMsg = await ctx.reply("Verifying BOA deposit with ShegerPay...", { parse_mode: "HTML" });
-        const verification = await verifyPaymentWithTxId("boa", extractedTxId, depositAmount, method.account_name, method?.account_number || null, senderAccount);
+        const verification = await verifyPayment(method?.name || "boa", extractedTxId, depositAmount, {
+            settlementAccount: method?.account_number || null,
+            expectedRecipientAccount: method?.account_number || null,
+            senderAccount: senderAccount,
+        });
 
         if (verification.verified) {
             const existingApprovedDeposit = await db.query(
@@ -2575,7 +2644,7 @@ bot.on("text", async (ctx) => {
                 try {
                     await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                         "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-                } catch(e) {
+                } catch (e) {
                     await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
                 }
                 delete userState[userId];
@@ -2593,7 +2662,7 @@ bot.on("text", async (ctx) => {
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                                 `This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
-                        } catch(e) {
+                        } catch (e) {
                             await ctx.reply(`This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.`, { parse_mode: "HTML" });
                         }
 
@@ -2628,7 +2697,7 @@ bot.on("text", async (ctx) => {
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                     `Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
-            } catch(e) {
+            } catch (e) {
                 await ctx.reply(`Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
             }
 
@@ -2652,7 +2721,7 @@ bot.on("text", async (ctx) => {
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                     `${verification.error}\n\nPlease make a NEW payment after creating your deposit request.`, { parse_mode: "HTML" });
-            } catch(e) {
+            } catch (e) {
                 await ctx.reply(`${verification.error}\n\nPlease make a NEW payment after creating your deposit request.`, { parse_mode: "HTML" });
             }
 
@@ -2674,7 +2743,7 @@ bot.on("text", async (ctx) => {
         try {
             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                 "Could not verify BOA deposit automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
-        } catch(e) {
+        } catch (e) {
             await ctx.reply("Could not verify BOA deposit automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
         }
 
@@ -2748,7 +2817,11 @@ bot.on("text", async (ctx) => {
         const expectedRecipient = method?.account_number || null;
 
         const verifyingMsg = await ctx.reply("🔍 Verifying BOA payment with ShegerPay...", { parse_mode: "HTML" });
-        const verification = await verifyPaymentWithTxId("boa", extractedTxId, paymentAmount, method?.account_name, expectedRecipient, senderAccount);
+        const verification = await verifyPayment(method?.name || "boa", extractedTxId, paymentAmount, {
+            settlementAccount: expectedRecipient,
+            expectedRecipientAccount: expectedRecipient,
+            senderAccount: senderAccount,
+        });
 
         if (!verification.verified) {
             const oldTransactionError = /too old|old transaction|recent payment/i.test(verification.error || "");
@@ -2757,7 +2830,7 @@ bot.on("text", async (ctx) => {
                 try {
                     await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                         `❌ ${verification.error}\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                } catch(e) {
+                } catch (e) {
                     await ctx.reply(`❌ ${verification.error}\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
                 }
 
@@ -2780,7 +2853,7 @@ bot.on("text", async (ctx) => {
             const manualReviewMessage = `⚠️ Could not verify BOA payment automatically.\n\nYour order has been submitted for manual review.\n❌ Error: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, manualReviewMessage, { parse_mode: "HTML" });
-            } catch(e) {
+            } catch (e) {
                 await ctx.reply(manualReviewMessage, { parse_mode: "HTML" });
             }
 
@@ -2836,7 +2909,7 @@ bot.on("text", async (ctx) => {
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                     "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-            } catch(e) {
+            } catch (e) {
                 await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
             }
             delete userState[userId];
@@ -2857,7 +2930,7 @@ bot.on("text", async (ctx) => {
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                             `❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease make a NEW payment after creating your order.`, { parse_mode: "HTML" });
                     }
 
@@ -2892,7 +2965,7 @@ bot.on("text", async (ctx) => {
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                             "✅ UC Delivered Successfully! (BOA payment verified)", { parse_mode: "HTML" });
-                    } catch(e) {}
+                    } catch (e) { }
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                         `Order #${orderId} auto-completed (BOA verified)\n` +
                         `User: @${ctx.from.username || userId}\n` +
@@ -2906,7 +2979,7 @@ bot.on("text", async (ctx) => {
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                             "✅ Payment verified!\n\n⚠️ Auto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
-                    } catch(e) {}
+                    } catch (e) { }
 
                     let adminMsg = `Order #${orderId} BOA payment verified but auto-delivery failed\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
                     if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
@@ -2917,12 +2990,12 @@ bot.on("text", async (ctx) => {
                         reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
                     });
                 }
-            } catch(ragnerError) {
+            } catch (ragnerError) {
                 await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                 try {
                     await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                         "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-                } catch(e) {}
+                } catch (e) { }
 
                 let adminMsg = `Order #${orderId} BOA payment verified (Ragner error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
                 if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
@@ -2938,7 +3011,7 @@ bot.on("text", async (ctx) => {
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                     "Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-            } catch(e) {}
+            } catch (e) { }
 
             let adminMsg = `Order #${orderId} automatically approved (BOA verified)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
             if (extractedPlayerId) {
@@ -2966,19 +3039,19 @@ bot.on("text", async (ctx) => {
 
     if (state.product?.type === "ragner" || pubgTypes.includes(state.product?.product_type)) {
         state.playerId = input;
-        
+
         try {
             const waitMsg = await ctx.reply("🔍 Verifying Player ID...");
-            
+
             let validation;
             if (state.product?.type === "ragner") {
                 validation = await validatePlayer(state.product.productId, input);
             } else {
                 validation = await validatePlayerOnly(input);
             }
-            
-            try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch(e) {}
-            
+
+            try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch (e) { }
+
             if (!validation || !validation.success) {
                 return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.\n\nType /cancel to cancel");
             }
@@ -2987,18 +3060,18 @@ bot.on("text", async (ctx) => {
             console.error("Validation error:", error);
             return ctx.reply("⏳ Service busy. Please try again in 2 minutes.\n\nType /cancel to cancel");
         }
-        
+
         state.step = "CONFIRM";
         let confirmMessage = "✅ Verification Successful\n\n";
         confirmMessage += `👤 Name: ${state.playerName}\n`;
         confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
-        
+
         return ctx.reply(confirmMessage, {
-            reply_markup: { 
+            reply_markup: {
                 inline_keyboard: [
                     [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
                     [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
-                ] 
+                ]
             },
         });
     } else if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
@@ -3021,15 +3094,15 @@ bot.on("photo", async (ctx) => {
     if (state?.announcementStep === "WAITING_FOR_IMAGES") {
         try {
             const fileId = ctx.message.photo.pop().file_id;
-            
+
             // Add image to collection
             if (!userState[userId].announcementData.images) {
                 userState[userId].announcementData.images = [];
             }
             userState[userId].announcementData.images.push(fileId);
-            
+
             const imageCount = userState[userId].announcementData.images.length;
-            
+
             await ctx.reply(
                 `📸 Image ${imageCount} received!\n\n` +
                 `You have sent: <b>${imageCount}</b> image${imageCount > 1 ? "s" : ""}\n\n` +
@@ -3057,24 +3130,24 @@ bot.on("photo", async (ctx) => {
         // ----- DEPOSIT FLOW -----
         if (state.step === "DEPOSIT_PAYMENT_WAITING" && state.depositAmount && state.depositMethod) {
             console.log("💰 Deposit flow: processing screenshot");
-            
+
             const scanningMsg = await ctx.reply("🔍 Scanning payment receipt with Cloud Vision...", { parse_mode: "HTML" });
-            
+
             const ocrResult = await extractTxIdFromImage(fileId);
             const extractedTxId = ocrResult?.txId;
             const ocrFullText = ocrResult?.fullText || "";
-            
+
             if (extractedTxId) {
                 try {
-                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                         `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying transaction...`, { parse_mode: "HTML" });
-                } catch(e) {}
-                
+                } catch (e) { }
+
                 const depositAmount = state.depositAmount;
                 const method = state.depositMethod;
                 const provider = resolveShegerPayProvider(method?.name) || "telebirr";
                 const expectedRecipient = method?.account_number || null;
-                
+
                 // BOA requires sender account, so pause here and collect it from the user.
                 let senderAccount = null;
                 let finalTxId = extractedTxId;
@@ -3088,14 +3161,18 @@ bot.on("photo", async (ctx) => {
                     try {
                         await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                             "Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply("Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
                     }
                     return;
                 }
-                
-                const verification = await verifyPaymentWithTxId(provider, finalTxId, depositAmount, method.account_name, expectedRecipient, senderAccount);
-                              if (verification.verified) {
+
+                const verification = await verifyPayment(method?.name || provider, finalTxId, depositAmount, {
+                    settlementAccount: method?.account_number || null,
+                    expectedRecipientAccount: expectedRecipient,
+                    senderAccount: senderAccount,
+                });
+                if (verification.verified) {
                     // ============ FIX 1: Check for duplicate transaction ============
                     const existingApprovedDeposit = await db.query(
                         "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
@@ -3105,59 +3182,63 @@ bot.on("photo", async (ctx) => {
                         "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
                         [extractedTxId]
                     );
-                    
+
                     if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
                         try {
-                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                 "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-                        } catch(e) {
+                        } catch (e) {
                             await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
                         }
                         delete userState[userId];
                         return;
                     }
-                    
-                    // ============ FIX 2: Check transaction timestamp (not older than 30 min) ============
-                // ============ FIX 2: Check transaction timestamp (not older than deposit request) ============
-if (verification.data?.timestamp) {
-    const txTime = parseShegerTimestamp(verification.data.timestamp);
-    const now = new Date();
-    
-    if (!txTime || isNaN(txTime.getTime())) {
-        console.error("❌ Could not parse timestamp, sending to manual review");
-    } else {
-        // Get the deposit request creation time (now)
-        const requestTime = new Date(); // The deposit was just created
-        
-        if (txTime < requestTime) {
-            const diffMinutes = Math.round((requestTime - txTime) / (1000 * 60));
-            console.log(`❌ Transaction is older than deposit request: ${diffMinutes} minutes before`);
-            try {
-                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                    `❌ This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.\n\nTransactions made before the request cannot be accepted.`, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your deposit request.\n\nPlease make a NEW payment AFTER creating your deposit request.\n\nTransactions made before the request cannot be accepted.`, { parse_mode: "HTML" });
-            }
-            
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
-                `⚠️ OLD TRANSACTION REJECTED (Deposit)\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Amount: ${depositAmount} ETB\n` +
-                `Method: ${method.name}\n` +
-                `TX ID: ${extractedTxId}\n` +
-                `Transaction time: ${verification.data.timestamp}\n` +
-                `Payment was ${diffMinutes} minutes BEFORE deposit request`
-            );
-            
-            delete userState[userId];
-            return;
-        }
-        
-        const diffMinutes = Math.round((now - txTime) / (1000 * 60));
-        console.log(`✅ Transaction timestamp valid: ${diffMinutes} minutes ago (after deposit request)`);
-    }
-}
-                    
+
+                    // ============ FIX 2: Check transaction timestamp (not older than deposit request) ============
+                    // ============ FIX 2: Check transaction timestamp (not older than deposit request) ============
+                    if (verification.data?.timestamp) {
+                        const txTime = parseShegerTimestamp(verification.data.timestamp);
+
+                        if (!txTime || isNaN(txTime.getTime())) {
+                            console.error("❌ Could not parse timestamp, sending to manual review");
+                        } else {
+                            const now = new Date();
+                            // Allow transactions up to 15 minutes old — covers:
+                            // - User pays then immediately sends screenshot
+                            // - OCR + polling processing time (~30s)
+                            // - Slight clock skew between Telebirr/CBE and our server
+                            const maxAgeMs = 15 * 60 * 1000;
+                            const cutoffTime = new Date(now.getTime() - maxAgeMs);
+
+                            if (txTime < cutoffTime) {
+                                const diffMinutes = Math.round((now - txTime) / (1000 * 60));
+                                console.log(`❌ Transaction is too old: ${diffMinutes} minutes ago`);
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
+                                        `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                                } catch (e) {
+                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                                }
+
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                                    `⚠️ OLD TRANSACTION REJECTED (Deposit)\n` +
+                                    `User: @${ctx.from.username || userId}\n` +
+                                    `Amount: ${depositAmount} ETB\n` +
+                                    `Method: ${method.name}\n` +
+                                    `TX ID: ${extractedTxId}\n` +
+                                    `Transaction time: ${verification.data.timestamp}\n` +
+                                    `Payment was ${diffMinutes} minutes ago`
+                                );
+
+                                delete userState[userId];
+                                return;
+                            }
+
+                            const diffMinutes = Math.round((now - txTime) / (1000 * 60));
+                            console.log(`✅ Transaction timestamp valid: ${diffMinutes} minutes ago`);
+                        }
+                    }
+
                     // All checks passed - APPROVE
                     const result = await db.query(
                         `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
@@ -3166,15 +3247,15 @@ if (verification.data?.timestamp) {
                     );
                     const depositId = result.rows[0].id;
                     await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit of ${depositAmount} ETB (TX: ${extractedTxId})`);
-                    
+
                     try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                             `✅ Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply(`✅ Deposit of ${depositAmount} ETB automatically verified!\n\nTransaction ID: ${extractedTxId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" });
                     }
-                    
-                    await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                         `✅ Auto-verified deposit #${depositId} (Cloud Vision OCR)\n` +
                         `User: @${ctx.from.username || userId}\n` +
                         `Amount: ${depositAmount} ETB\n` +
@@ -3182,7 +3263,7 @@ if (verification.data?.timestamp) {
                         `Transaction ID: ${extractedTxId}\n` +
                         `Timestamp: ${verification.data?.timestamp || 'N/A'}`
                     );
-                    
+
                     delete userState[userId];
                     setTimeout(() => showMainMenu(ctx), 2000);
                     return;
@@ -3190,19 +3271,19 @@ if (verification.data?.timestamp) {
                     // Verification failed - send to admin for manual review
                     // Verification failed - send to admin for manual review
                     try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                             "⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply("⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.", { parse_mode: "HTML" });
                     }
-                    
+
                     const depositResult = await db.query(
                         `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
                          VALUES ($1, $2, $3, $4, 'PENDING', $5) RETURNING id`,
                         [userId, state.depositAmount, state.depositMethod.name, fileId, extractedTxId]
                     );
                     const depositId = depositResult.rows[0].id;
-                    
+
                     await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
                         caption: `💰 NEW DEPOSIT (Manual Review - OCR found: ${extractedTxId})\n\n` +
                             `👤 User: @${ctx.from.username || userId}\n` +
@@ -3212,14 +3293,14 @@ if (verification.data?.timestamp) {
                             (provider === "boa" ? `🔗 BOA URL sent: ${finalTxId}\n` : '') +
                             `❌ Error: ${verification.error}\n\n` +
                             `Use buttons below to manage:`,
-                        reply_markup: { 
+                        reply_markup: {
                             inline_keyboard: [[
-                                { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, 
+                                { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` },
                                 { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }
-                            ]] 
+                            ]]
                         }
                     });
-                    
+
                     delete userState[userId];
                     setTimeout(() => showMainMenu(ctx), 3000);
                     return;
@@ -3227,19 +3308,19 @@ if (verification.data?.timestamp) {
             } else {
                 // No TX ID found - send to admin for manual review
                 try {
-                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                         "⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
-                } catch(e) {
+                } catch (e) {
                     await ctx.reply("⚠️ Could not read transaction ID from image.\n\nYour screenshot has been sent to our team for manual review. You will be notified shortly.", { parse_mode: "HTML" });
                 }
-                
+
                 const depositResult = await db.query(
                     `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status)
                      VALUES ($1, $2, $3, $4, 'PENDING') RETURNING id`,
                     [userId, state.depositAmount, state.depositMethod.name, fileId]
                 );
                 const depositId = depositResult.rows[0].id;
-                
+
                 await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
                     caption: `💰 NEW DEPOSIT (Manual Review - Couldn't read TX ID)\n\n` +
                         `👤 User: @${ctx.from.username || userId}\n` +
@@ -3247,14 +3328,14 @@ if (verification.data?.timestamp) {
                         `💳 Method: ${state.depositMethod.name}\n` +
                         `🧾 Request ID: #${depositId}\n` +
                         `📝 Please verify and manage manually.`,
-                    reply_markup: { 
+                    reply_markup: {
                         inline_keyboard: [[
-                            { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, 
+                            { text: "✅ Approve", callback_data: `approve_deposit_${depositId}` },
                             { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }
-                        ]] 
+                        ]]
                     }
                 });
-                
+
                 delete userState[userId];
                 setTimeout(() => showMainMenu(ctx), 3000);
                 return;
@@ -3262,13 +3343,13 @@ if (verification.data?.timestamp) {
         }
 
         // ----- BANK TRANSFER PRODUCT FLOW -----
-             // ----- BANK TRANSFER PRODUCT FLOW -----
+        // ----- BANK TRANSFER PRODUCT FLOW -----
         if (state.step === "PAY" && state.productInfo) {
             const product = state.productInfo;
             console.log("Processing product order:", JSON.stringify(product, null, 2));
 
             const scanningMsg = await ctx.reply("🔍 Scanning payment receipt...", { parse_mode: "HTML" });
-            
+
             let extractedPlayerId = null, extractedPlayerName = null;
             let userInputs = {};
             if (state.collectedData) {
@@ -3317,17 +3398,17 @@ if (verification.data?.timestamp) {
             const ocrResult = await extractTxIdFromImage(fileId);
             const extractedTxId = ocrResult?.txId;
             const ocrFullText = ocrResult?.fullText || "";
-            
+
             if (extractedTxId) {
                 try {
-                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                         `🔍 Transaction ID found: ${extractedTxId}\n⏳ Verifying payment...`, { parse_mode: "HTML" });
-                } catch(e) {}
-                
+                } catch (e) { }
+
                 const provider = resolveShegerPayProvider(state.paymentMethod?.name) || "telebirr";
                 const method = state.paymentMethod;
                 const expectedRecipient = method?.account_number || null;
-                
+
                 // For BOA, skip auto-verify and ask for sender account
                 if (provider === "boa") {
                     userState[userId].extractedTxId = extractedTxId;
@@ -3335,22 +3416,26 @@ if (verification.data?.timestamp) {
                     userState[userId].boapaymentFileId = fileId;
                     userState[userId].orderId = orderId;
                     userState[userId].step = "AWAITING_BOA_SENDER_ACCOUNT";
-                    
+
                     try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                             "🏦 Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\n📝 For BOA verification, please enter your **full account number** (sender account).\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply("🏦 Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\n📝 For BOA verification, please enter your **full account number** (sender account).\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
                     }
                     return;
                 }
-                
+
                 // For non-BOA providers, verify with ShegerPay
-                const verification = await verifyPaymentWithTxId(provider, extractedTxId, product.price, method?.account_name, expectedRecipient);
-                
+                const verification = await verifyPayment(state.paymentMethod?.name || provider, extractedTxId, product.price, {
+                    settlementAccount: expectedRecipient,
+                    expectedRecipientAccount: expectedRecipient,
+                    phone: state.collectedData?.phone || null,
+                });
+
                 if (verification.verified) {
                     console.log("✅ ShegerPay verification passed!");
-    console.log("🕐 Timestamp from ShegerPay:", verification.data?.timestamp);
+                    console.log("🕐 Timestamp from ShegerPay:", verification.data?.timestamp);
                     // ============ FIX 1: Check for duplicate transaction ============
                     const existingApprovedDeposit = await db.query(
                         "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED'",
@@ -3360,86 +3445,86 @@ if (verification.data?.timestamp) {
                         "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED', 'COMPLETED')",
                         [extractedTxId]
                     );
-                    
+
                     if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
                         await db.query(`UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1`, [orderId]);
                         try {
-                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                 "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
-                        } catch(e) {
+                        } catch (e) {
                             await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
                         }
                         delete userState[userId];
                         return;
                     }
-                    
-    // ============ FIX 2: Check transaction timestamp ============
-if (verification.data?.timestamp) {
-    const txTime = parseShegerTimestamp(verification.data.timestamp);
-    
-    if (txTime && !isNaN(txTime.getTime())) {
-        // Get the order creation time
-        const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
-        const orderCreatedAt = new Date(orderResult.rows[0]?.created_at);
-        const now = new Date();
-        
-        console.log("🕐 TX Time:", txTime.toISOString());
-        console.log("🕐 Order Created:", orderCreatedAt.toISOString());
-        console.log("🕐 Current Time:", now.toISOString());
-        
-        // REJECT if transaction is OLDER than 10 minutes before order creation
-        const tenMinutesBeforeOrder = new Date(orderCreatedAt.getTime() - 10 * 60 * 1000);
-        
-        if (txTime < tenMinutesBeforeOrder) {
-            const diffMinutes = Math.round((orderCreatedAt - txTime) / (1000 * 60));
-            console.log(`❌ OLD TRANSACTION: Payment was ${diffMinutes} minutes before order`);
-            
-            await db.query(`UPDATE orders SET status='REJECTED', note='Old payment: ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
-            
-            try {
-                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
-                    `❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
-            } catch(e) {
-                await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
-            }
-            
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
-                `⚠️ OLD TRANSACTION REJECTED\n` +
-                `User: @${ctx.from.username || userId}\n` +
-                `Product: ${product.name}\n` +
-                `Amount: ${product.price} ETB\n` +
-                `Order #${orderId}\n` +
-                `TX ID: ${extractedTxId}\n` +
-                `TX Time: ${verification.data.timestamp}\n` +
-                `Order Time: ${orderCreatedAt.toISOString()}\n` +
-                `Difference: ${diffMinutes} minutes`
-            );
-            
-            delete userState[userId];
-            return;
-        }
-        
-        console.log(`✅ Transaction accepted - within 10 min window`);
-    }
-} else {
-        console.log("⚠️ No timestamp in verification data - accepting anyway");
-    }
-                    
+
+                    // ============ FIX 2: Check transaction timestamp ============
+                    if (verification.data?.timestamp) {
+                        const txTime = parseShegerTimestamp(verification.data.timestamp);
+
+                        if (txTime && !isNaN(txTime.getTime())) {
+                            // Get the order creation time
+                            const orderResult = await db.query("SELECT created_at FROM orders WHERE id = $1", [orderId]);
+                            const orderCreatedAt = new Date(orderResult.rows[0]?.created_at);
+                            const now = new Date();
+
+                            console.log("🕐 TX Time:", txTime.toISOString());
+                            console.log("🕐 Order Created:", orderCreatedAt.toISOString());
+                            console.log("🕐 Current Time:", now.toISOString());
+
+                            // REJECT if transaction is OLDER than 10 minutes before order creation
+                            const tenMinutesBeforeOrder = new Date(orderCreatedAt.getTime() - 10 * 60 * 1000);
+
+                            if (txTime < tenMinutesBeforeOrder) {
+                                const diffMinutes = Math.round((orderCreatedAt - txTime) / (1000 * 60));
+                                console.log(`❌ OLD TRANSACTION: Payment was ${diffMinutes} minutes before order`);
+
+                                await db.query(`UPDATE orders SET status='REJECTED', note='Old payment: ${diffMinutes} min before order' WHERE id=$1`, [orderId]);
+
+                                try {
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
+                                        `❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
+                                } catch (e) {
+                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes BEFORE your order.\n\nPlease contact support for assistance with old transactions.`, { parse_mode: "HTML" });
+                                }
+
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                                    `⚠️ OLD TRANSACTION REJECTED\n` +
+                                    `User: @${ctx.from.username || userId}\n` +
+                                    `Product: ${product.name}\n` +
+                                    `Amount: ${product.price} ETB\n` +
+                                    `Order #${orderId}\n` +
+                                    `TX ID: ${extractedTxId}\n` +
+                                    `TX Time: ${verification.data.timestamp}\n` +
+                                    `Order Time: ${orderCreatedAt.toISOString()}\n` +
+                                    `Difference: ${diffMinutes} minutes`
+                                );
+
+                                delete userState[userId];
+                                return;
+                            }
+
+                            console.log(`✅ Transaction accepted - within 10 min window`);
+                        }
+                    } else {
+                        console.log("⚠️ No timestamp in verification data - accepting anyway");
+                    }
+
                     // All checks passed - APPROVE
                     await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
-                    
+
                     const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
-                    
+
                     if (isInstant) {
                         try {
                             const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
                             if (ragnerResult && ragnerResult.success) {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
-                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                         "🎮 UC Delivered Successfully! (Payment auto-verified via OCR)", { parse_mode: "HTML" });
-                                } catch(e) {}
-                                await ctx.telegram.sendMessage(process.env.ADMIN_ID, 
+                                } catch (e) { }
+                                await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                                     `✅ Order #${orderId} auto-completed (Cloud Vision OCR)\n` +
                                     `User: @${ctx.from.username || userId}\n` +
                                     `Product: ${product.name}\n` +
@@ -3449,31 +3534,31 @@ if (verification.data?.timestamp) {
                             } else {
                                 await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                                 try {
-                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                         "✅ Payment verified!\n\nAuto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
-                                } catch(e) {}
-                                
+                                } catch (e) { }
+
                                 let adminMsg = `🟡 Order #${orderId} payment verified but auto-delivery failed\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
                                 if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
                                 if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
                                 adminMsg += `\n👇 Click "Complete" after manual delivery.`;
-                                
+
                                 await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                     reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                                 });
                             }
-                        } catch(ragnerError) {
+                        } catch (ragnerError) {
                             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                             try {
-                                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                                await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                     "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-                            } catch(e) {}
-                            
+                            } catch (e) { }
+
                             let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
                             if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
                             if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
                             adminMsg += `\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
-                            
+
                             await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                 reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                             });
@@ -3482,26 +3567,26 @@ if (verification.data?.timestamp) {
                         // Manual product - auto approved
                         await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                         try {
-                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                            await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                 "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
-                        } catch(e) {}
-                        
+                        } catch (e) { }
+
                         let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
                         if (extractedPlayerId) {
                             adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
                             if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
                         }
                         adminMsg += `\n👇 Click "Complete" after manual delivery.`;
-                        
+
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                             reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                         });
                     }
-                    
+
                     delete userState[userId];
                     setTimeout(() => showMainMenu(ctx), 3000);
                     return;
-                    
+
                 } else {
                     const duplicateFromShegerPay =
                         verification.details?.already_verified === true ||
@@ -3515,7 +3600,7 @@ if (verification.data?.timestamp) {
                         try {
                             await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                 duplicateMessage, { parse_mode: "HTML" });
-                        } catch(e) {
+                        } catch (e) {
                             await ctx.reply(duplicateMessage, { parse_mode: "HTML" });
                         }
 
@@ -3536,14 +3621,14 @@ if (verification.data?.timestamp) {
                     // Verification FAILED - send to admin for manual review
                     const manualReviewMessage = `⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review.\nError: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
                     try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                             manualReviewMessage, { parse_mode: "HTML" });
-                    } catch(e) {
+                    } catch (e) {
                         await ctx.reply(manualReviewMessage, { parse_mode: "HTML" });
                     }
-                    
+
                     await db.query(`UPDATE orders SET transaction_id = $1 WHERE id = $2`, [extractedTxId, orderId]);
-                    
+
                     let adminCaption = `📥 NEW ORDER (Manual Review)\n\n` +
                         `👤 User: @${ctx.from.username || userId}\n` +
                         `📦 Product: ${product.name}\n` +
@@ -3569,7 +3654,7 @@ if (verification.data?.timestamp) {
                             ],
                         },
                     });
-                    
+
                     delete userState[userId];
                     setTimeout(() => showMainMenu(ctx), 3000);
                     return;
@@ -3577,24 +3662,24 @@ if (verification.data?.timestamp) {
             } else {
                 // No TX ID found - send to admin
                 try {
-                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, 
+                    await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                         "⚠️ Could not read transaction ID from image.\n\nYour order has been submitted for manual review. You will be notified when approved.", { parse_mode: "HTML" });
-                } catch(e) {}
-                
+                } catch (e) { }
+
                 let adminCaption = `📥 NEW ORDER (Manual Review - Couldn't read TX ID)\n\n` +
                     `👤 User: @${ctx.from.username || userId}\n` +
                     `📦 Product: ${product.name}\n` +
                     `💰 Amount: ${product.price} ETB\n` +
                     `🧾 Order ID: #${orderId}\n` +
                     `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n`;
-                
+
                 if (extractedPlayerId) {
                     adminCaption += `\n🎮 Player ID: ${extractedPlayerId}\n`;
                     if (extractedPlayerName) adminCaption += `👤 Player Name: ${extractedPlayerName}\n`;
                 }
-                
+
                 adminCaption += `\nUse buttons below to manage:`;
-                
+
                 await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
                     caption: adminCaption,
                     reply_markup: {
@@ -3604,13 +3689,13 @@ if (verification.data?.timestamp) {
                         ],
                     },
                 });
-                
+
                 delete userState[userId];
                 setTimeout(() => showMainMenu(ctx), 3000);
                 return;
             }
         }
-        
+
         console.log("❌ Unhandled state in photo handler");
         await ctx.reply("⚠️ Something went wrong. Please start over with /start", { parse_mode: "HTML" });
         delete userState[userId];
@@ -3620,6 +3705,40 @@ if (verification.data?.timestamp) {
     }
 });
 
+// =====================
+// 🟢 GLOBAL ERROR HANDLERS — prevent ECONNRESET / network blips from crashing the process
+// =====================
+bot.catch((err, ctx) => {
+    const errMsg = err?.message || String(err);
+    // Network-level errors from Telegram (ECONNRESET, ETIMEDOUT, etc.) are transient — log and continue
+    if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(errMsg)) {
+        console.warn(`⚠️ Telegram network error (ignored): ${errMsg}`);
+        return;
+    }
+    console.error("❌ Unhandled bot error:", errMsg);
+    if (ctx) {
+        ctx.reply("❌ Something went wrong. Please try again.").catch(() => { });
+    }
+});
 
+process.on("uncaughtException", (err) => {
+    const errMsg = err?.message || String(err);
+    if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(errMsg)) {
+        console.warn(`⚠️ Uncaught network error (ignored): ${errMsg}`);
+        return;
+    }
+    console.error("❌ Uncaught exception:", err);
+    // Don't exit — keep the bot running
+});
+
+process.on("unhandledRejection", (reason) => {
+    const errMsg = reason?.message || String(reason);
+    if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(errMsg)) {
+        console.warn(`⚠️ Unhandled rejection (network, ignored): ${errMsg}`);
+        return;
+    }
+    console.error("❌ Unhandled rejection:", reason);
+    // Don't exit — keep the bot running
+});
 
 module.exports = bot;

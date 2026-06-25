@@ -16,17 +16,31 @@ const app = express();
 
 app.use(cors());
 
+// IMPORTANT: Verify.ET webhook needs RAW body for HMAC-SHA256 signature verification
+app.use("/webhook/verify-et", (req, res, next) => {
+    let rawData = '';
+    req.on('data', (chunk) => { rawData += chunk.toString(); });
+    req.on('end', () => {
+        req.rawBody = rawData;
+        if (rawData) {
+            try { req.body = JSON.parse(rawData); }
+            catch (error) { return res.status(400).json({ error: "Invalid JSON" }); }
+        }
+        next();
+    });
+});
+
 // IMPORTANT: ShegerPay webhook needs RAW body for signature verification
 app.use("/webhook/shegerpay", (req, res, next) => {
     let rawData = '';
-    
+
     req.on('data', (chunk) => {
         rawData += chunk.toString();
     });
-    
+
     req.on('end', () => {
         req.rawBody = rawData;
-        
+
         if (rawData) {
             try {
                 req.body = JSON.parse(rawData);
@@ -35,7 +49,7 @@ app.use("/webhook/shegerpay", (req, res, next) => {
                 return res.status(400).json({ error: "Invalid JSON" });
             }
         }
-        
+
         next();
     });
 });
@@ -53,11 +67,11 @@ app.use("/api/auth", authRoutes);
 // Auth middleware for protected routes
 const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
-    
+
     if (!token) {
         return res.status(401).json({ error: "Unauthorized" });
     }
-    
+
     try {
         const jwt = require("jsonwebtoken");
         const decoded = jwt.verify(token, process.env.JWT_SECRET || "natan_topup_secret_key_2024");

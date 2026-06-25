@@ -39,21 +39,21 @@ function verifyWebhookSignature(body, signatureHeader, secret) {
         console.log("❌ Missing signature or secret");
         return false;
     }
-    
+
     // ShegerPay sends: sha256=<hmac_hex_digest>
     const provided = signatureHeader.replace('sha256=', '').trim();
-    
+
     if (!/^[0-9a-f]{64}$/i.test(provided)) {
         console.error("❌ Invalid signature format:", provided.substring(0, 20) + "...");
         return false;
     }
-    
+
     // Create expected signature (hex digest as per ShegerPay docs)
     const expected = crypto
         .createHmac('sha256', secret)
         .update(body, 'utf8')
         .digest('hex');
-    
+
     // Debug logging (remove in production)
     console.log("🔐 Signature verification debug:");
     console.log("   Body length:", body.length);
@@ -61,7 +61,7 @@ function verifyWebhookSignature(body, signatureHeader, secret) {
     console.log("   Expected:", expected);
     console.log("   Provided:", provided);
     console.log("   Match:", expected === provided);
-    
+
     // Use timing-safe comparison
     try {
         return crypto.timingSafeEqual(
@@ -120,7 +120,7 @@ async function findPendingDepositByTxId(txId, amount, provider) {
         [txId]
     );
     if (result.rows[0]) return result.rows[0];
-    
+
     // If no exact match, try matching by amount and recent deposits
     if (amount) {
         result = await db.query(
@@ -133,7 +133,7 @@ async function findPendingDepositByTxId(txId, amount, provider) {
              LIMIT 1`,
             [amount, `%${provider}%`]
         );
-        
+
         if (result.rows[0]) {
             // Update the transaction_id for future reference
             await db.query(
@@ -143,7 +143,7 @@ async function findPendingDepositByTxId(txId, amount, provider) {
             return result.rows[0];
         }
     }
-    
+
     return null;
 }
 
@@ -157,7 +157,7 @@ async function findPendingOrderByTxId(txId, amount, provider) {
         [txId]
     );
     if (result.rows[0]) return result.rows[0];
-    
+
     // If no exact match, try matching by amount and recent orders
     if (amount) {
         result = await db.query(
@@ -170,7 +170,7 @@ async function findPendingOrderByTxId(txId, amount, provider) {
              LIMIT 1`,
             [amount]
         );
-        
+
         if (result.rows[0]) {
             // Update the transaction_id for future reference
             await db.query(
@@ -180,7 +180,7 @@ async function findPendingOrderByTxId(txId, amount, provider) {
             return result.rows[0];
         }
     }
-    
+
     return null;
 }
 
@@ -191,7 +191,7 @@ async function updateWalletBalance(telegramId, amount, type, referenceId, descri
     const client = await db.connect();
     try {
         await client.query("BEGIN");
-        
+
         let wallet = await client.query(
             "SELECT balance FROM user_wallets WHERE telegram_id = $1",
             [telegramId]
@@ -203,22 +203,22 @@ async function updateWalletBalance(telegramId, amount, type, referenceId, descri
             );
             wallet = { rows: [{ balance: 0 }] };
         }
-        
+
         const oldBalance = parseFloat(wallet.rows[0].balance);
         const newBalance = type === "DEPOSIT" ? oldBalance + amount : oldBalance - amount;
-        
+
         await client.query(
             "UPDATE user_wallets SET balance = $1, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = $2",
             [newBalance, telegramId]
         );
-        
+
         await client.query(
             `INSERT INTO transaction_history 
             (telegram_id, type, amount, balance_before, balance_after, reference_id, description)
             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [telegramId, type, amount, oldBalance, newBalance, referenceId, description]
         );
-        
+
         await client.query("COMMIT");
         return newBalance;
     } catch (error) {
@@ -264,21 +264,21 @@ async function handlePaymentVerified(data, deliveryId) {
     const txId = data.transaction_id;
     const amount = parseFloat(data.amount);
     const provider = data.provider;
-    
+
     console.log(`💰 Processing payment.verified webhook: TX ${txId}, Amount ${amount}, Provider ${provider}`);
-    
+
     // Check if it's a deposit request
     const pendingDeposit = await findPendingDepositByTxId(txId, amount, provider);
     if (pendingDeposit) {
         console.log(`✅ Found pending deposit #${pendingDeposit.id}`);
-        
+
         await db.query(
             `UPDATE deposit_requests 
              SET status = 'APPROVED', processed_at = CURRENT_TIMESTAMP 
              WHERE id = $1`,
             [pendingDeposit.id]
         );
-        
+
         await updateWalletBalance(
             pendingDeposit.telegram_id,
             pendingDeposit.amount,
@@ -286,7 +286,7 @@ async function handlePaymentVerified(data, deliveryId) {
             pendingDeposit.id,
             `Deposit of ${pendingDeposit.amount} ETB (Auto-verified via webhook, TX: ${txId})`
         );
-        
+
         const bot = await getBot();
         if (bot) {
             // Notify user
@@ -300,7 +300,7 @@ async function handlePaymentVerified(data, deliveryId) {
             } catch (err) {
                 console.error("Failed to notify user:", err.message);
             }
-            
+
             // Notify admin
             try {
                 await bot.telegram.sendMessage(
@@ -316,38 +316,38 @@ async function handlePaymentVerified(data, deliveryId) {
                 console.error("Failed to notify admin:", err.message);
             }
         }
-        
+
         return true;
     }
-    
+
     // Check if it's an order payment
     const pendingOrder = await findPendingOrderByTxId(txId, amount, provider);
     if (pendingOrder) {
         console.log(`✅ Found pending order #${pendingOrder.id}`);
-        
-        const isInstant = pendingOrder.delivery_type === "ragner" || 
-                         (pendingOrder.external_product_id && pendingOrder.delivery_type === "ragner");
-        
+
+        const isInstant = pendingOrder.delivery_type === "ragner" ||
+            (pendingOrder.external_product_id && pendingOrder.delivery_type === "ragner");
+
         const bot = await getBot();
-        
+
         if (isInstant) {
             let ragnerDelivered = false;
-            
+
             // Try Ragner delivery if service is available
             try {
                 const { createOrder } = require("../../services/ragner");
                 const ragnerResult = await createOrder(
-                    pendingOrder.external_product_id, 
+                    pendingOrder.external_product_id,
                     pendingOrder.player_id
                 );
-                
+
                 if (ragnerResult && ragnerResult.success) {
                     ragnerDelivered = true;
                     await db.query(
                         `UPDATE orders SET status = 'COMPLETED', verified_by_shegerpay = true WHERE id = $1`,
                         [pendingOrder.id]
                     );
-                    
+
                     if (bot) {
                         try {
                             await bot.telegram.sendMessage(
@@ -359,7 +359,7 @@ async function handlePaymentVerified(data, deliveryId) {
                         } catch (err) {
                             console.error("Failed to notify user:", err.message);
                         }
-                        
+
                         try {
                             await bot.telegram.sendMessage(
                                 process.env.ADMIN_ID,
@@ -380,14 +380,14 @@ async function handlePaymentVerified(data, deliveryId) {
                 console.error("Ragner delivery failed:", ragnerError.message);
                 // Fall through to manual approval
             }
-            
+
             if (!ragnerDelivered) {
                 // Mark as approved, requires manual delivery
                 await db.query(
                     `UPDATE orders SET status = 'APPROVED', verified_by_shegerpay = true WHERE id = $1`,
                     [pendingOrder.id]
                 );
-                
+
                 if (bot) {
                     try {
                         await bot.telegram.sendMessage(
@@ -399,7 +399,7 @@ async function handlePaymentVerified(data, deliveryId) {
                     } catch (err) {
                         console.error("Failed to notify user:", err.message);
                     }
-                    
+
                     try {
                         await bot.telegram.sendMessage(
                             process.env.ADMIN_ID,
@@ -412,9 +412,9 @@ async function handlePaymentVerified(data, deliveryId) {
                             `🔑 Delivery ID: ${deliveryId || 'N/A'}`,
                             {
                                 reply_markup: {
-                                    inline_keyboard: [[{ 
-                                        text: "🎮 Complete Delivery", 
-                                        callback_data: `complete_${pendingOrder.id}` 
+                                    inline_keyboard: [[{
+                                        text: "🎮 Complete Delivery",
+                                        callback_data: `complete_${pendingOrder.id}`
                                     }]]
                                 }
                             }
@@ -430,7 +430,7 @@ async function handlePaymentVerified(data, deliveryId) {
                 `UPDATE orders SET status = 'APPROVED', verified_by_shegerpay = true WHERE id = $1`,
                 [pendingOrder.id]
             );
-            
+
             if (bot) {
                 try {
                     await bot.telegram.sendMessage(
@@ -442,14 +442,14 @@ async function handlePaymentVerified(data, deliveryId) {
                 } catch (err) {
                     console.error("Failed to notify user:", err.message);
                 }
-                
+
                 let adminMsg = `✅ ORDER AUTO-APPROVED (Webhook)\n\n` +
                     `👤 User ID: ${pendingOrder.telegram_id}\n` +
                     `📦 Product: ${pendingOrder.product_name}\n` +
                     `💰 Amount: ${pendingOrder.price_etb} ETB\n` +
                     `🧾 Transaction ID: ${txId}\n\n` +
                     `👇 Click "Complete" after manual delivery.`;
-                
+
                 if (pendingOrder.user_inputs) {
                     const inputs = parseUserInputs(pendingOrder.user_inputs);
                     if (inputs) {
@@ -460,7 +460,7 @@ async function handlePaymentVerified(data, deliveryId) {
                         if (inputs.password) adminMsg += `\n🔐 Password: ${inputs.password}`;
                     }
                 }
-                
+
                 if (pendingOrder.payment_file_id) {
                     try {
                         await bot.telegram.sendPhoto(
@@ -469,9 +469,9 @@ async function handlePaymentVerified(data, deliveryId) {
                             {
                                 caption: adminMsg,
                                 reply_markup: {
-                                    inline_keyboard: [[{ 
-                                        text: "🎮 Complete Delivery", 
-                                        callback_data: `complete_${pendingOrder.id}` 
+                                    inline_keyboard: [[{
+                                        text: "🎮 Complete Delivery",
+                                        callback_data: `complete_${pendingOrder.id}`
                                     }]]
                                 }
                             }
@@ -484,9 +484,9 @@ async function handlePaymentVerified(data, deliveryId) {
                                 adminMsg,
                                 {
                                     reply_markup: {
-                                        inline_keyboard: [[{ 
-                                            text: "🎮 Complete Delivery", 
-                                            callback_data: `complete_${pendingOrder.id}` 
+                                        inline_keyboard: [[{
+                                            text: "🎮 Complete Delivery",
+                                            callback_data: `complete_${pendingOrder.id}`
                                         }]]
                                     }
                                 }
@@ -502,9 +502,9 @@ async function handlePaymentVerified(data, deliveryId) {
                             adminMsg,
                             {
                                 reply_markup: {
-                                    inline_keyboard: [[{ 
-                                        text: "🎮 Complete Delivery", 
-                                        callback_data: `complete_${pendingOrder.id}` 
+                                    inline_keyboard: [[{
+                                        text: "🎮 Complete Delivery",
+                                        callback_data: `complete_${pendingOrder.id}`
                                     }]]
                                 }
                             }
@@ -515,10 +515,10 @@ async function handlePaymentVerified(data, deliveryId) {
                 }
             }
         }
-        
+
         return true;
     }
-    
+
     console.log(`⚠️ No pending deposit or order found for TX ${txId} (Amount: ${amount}, Provider: ${provider})`);
     return false;
 }
@@ -530,9 +530,9 @@ async function handlePaymentFailed(data) {
     const txId = data.transaction_id;
     const reason = data.reason || "Unknown";
     const provider = data.provider || "Unknown";
-    
+
     console.log(`❌ Processing payment.failed webhook: TX ${txId}, Reason: ${reason}`);
-    
+
     const bot = await getBot();
     if (bot) {
         try {
@@ -547,9 +547,115 @@ async function handlePaymentFailed(data) {
             console.error("Failed to notify admin:", err.message);
         }
     }
-    
+
     return true;
 }
+
+// =====================
+// 🟢 VERIFY.ET WEBHOOK ENDPOINT
+// =====================
+router.post("/verify-et", async (req, res) => {
+    const startTime = Date.now();
+    const rawBody = req.rawBody || JSON.stringify(req.body);
+    const signature = req.headers["x-webhook-signature"];
+    const timestamp = req.headers["x-webhook-timestamp"];
+    const event = req.headers["x-webhook-event"];
+    const deliveryId = req.headers["x-webhook-delivery-id"];
+    const body = req.body || {};
+
+    console.log("📨 Verify.ET webhook received:", {
+        event,
+        deliveryId: deliveryId || 'N/A',
+        signature: signature ? "present" : "missing",
+        hasBody: Boolean(rawBody)
+    });
+
+    // 1. Verify HMAC-SHA256 signature if secret is configured
+    const secret = process.env.VERIFY_ET_WEBHOOK_SECRET;
+    if (secret) {
+        if (!signature) {
+            console.error("❌ Verify.ET webhook: signature expected but missing");
+            return res.status(401).json({ error: "Missing signature" });
+        }
+
+        const provided = signature.replace("sha256=", "").trim();
+        const expected = crypto
+            .createHmac("sha256", secret)
+            .update(`${timestamp}.${rawBody}`, "utf8")
+            .digest("hex");
+
+        let signatureMatch = false;
+        try {
+            signatureMatch = crypto.timingSafeEqual(
+                Buffer.from(expected),
+                Buffer.from(provided)
+            );
+        } catch (err) {
+            console.error("❌ Verify.ET signature comparison error:", err.message);
+        }
+
+        if (!signatureMatch) {
+            console.error("❌ Verify.ET webhook: invalid signature");
+            await logWebhookDelivery(
+                event, deliveryId, false, body, false,
+                "Invalid signature", Date.now() - startTime
+            );
+            return res.status(401).json({ error: "Invalid signature" });
+        }
+
+        console.log("✅ Verify.ET signature verified");
+    }
+
+    // 2. Validate payload — must have data.verified true and a recognizable event
+    const data = body.data;
+    if (!data || body.event !== "verification.completed" || data.verified !== true) {
+        console.log(`⚠️ Verify.ET webhook: unrecognized payload (event=${body.event}, verified=${data?.verified})`);
+        await logWebhookDelivery(
+            event, deliveryId, true, body, false,
+            "Unrecognized payload", Date.now() - startTime
+        );
+        return res.status(400).json({ error: "Unrecognized payload" });
+    }
+
+    // 3. Map Verify.ET fields to internal handler fields
+    const txId = data.referenceNumber || data.transactionNumber || data.receiptNumber;
+    const amount = parseFloat(data.amount);
+    const provider = data.bank;
+
+    const internalData = {
+        transaction_id: txId,
+        amount,
+        provider
+    };
+
+    // 4. Process using shared payment logic
+    let processed = false;
+    let errorMessage = null;
+
+    try {
+        processed = await handlePaymentVerified(internalData, deliveryId);
+        if (!processed) {
+            errorMessage = "No pending transaction found matching this payment";
+        }
+    } catch (error) {
+        console.error("❌ Verify.ET webhook processing error:", error);
+        errorMessage = error.message;
+        processed = false;
+    }
+
+    // 5. Log delivery
+    const processingTime = Date.now() - startTime;
+    await logWebhookDelivery(
+        event || "verification.completed", deliveryId, true, body,
+        processed, errorMessage, processingTime
+    );
+
+    // 6. Respond — 204 on success, 500 on internal error
+    if (processed) {
+        return res.status(204).end();
+    }
+    return res.status(500).json({ error: errorMessage || "Processing failed" });
+});
 
 // =====================
 // 🟢 WEBHOOK ENDPOINT
@@ -561,35 +667,35 @@ router.post("/shegerpay", async (req, res) => {
     const event = req.headers["x-shegerpay-event"];
     const deliveryId = req.headers["x-shegerpay-delivery-id"];
     const data = req.body.data || req.body;
-    
+
     console.log("📨 ShegerPay webhook received:", {
         event,
         deliveryId: deliveryId || 'N/A',
         signature: signature ? "present" : "missing",
         hasBody: Boolean(rawBody)
     });
-    
-    debugLog("Webhook details", { 
-        event, 
-        deliveryId, 
+
+    debugLog("Webhook details", {
+        event,
+        deliveryId,
         rawBody: rawBody?.substring(0, 500),
-        data 
+        data
     });
-    
+
     // 1. Check for duplicate delivery
     if (deliveryId && await isDuplicateDelivery(deliveryId)) {
         console.log(`⚠️ Duplicate webhook delivery: ${deliveryId}`);
-        return res.status(200).json({ 
-            success: true, 
+        return res.status(200).json({
+            success: true,
             message: 'Already processed',
-            deliveryId 
+            deliveryId
         });
     }
-    
+
     // 2. Verify signature
     const secret = await getWebhookSecret();
     let signatureValid = false;
-    
+
     if (secret) {
         if (signature) {
             signatureValid = verifyWebhookSignature(rawBody, signature, secret);
@@ -598,7 +704,7 @@ router.post("/shegerpay", async (req, res) => {
             } else {
                 console.error("❌ Invalid webhook signature");
                 await logWebhookDelivery(
-                    event, deliveryId, false, data, false, 
+                    event, deliveryId, false, data, false,
                     'Invalid signature', Date.now() - startTime
                 );
                 return res.status(401).json({ error: "Invalid signature" });
@@ -609,11 +715,11 @@ router.post("/shegerpay", async (req, res) => {
     } else {
         console.warn("⚠️ No webhook secret configured – skipping signature verification");
     }
-    
+
     // 3. Process based on event type
     let processed = false;
     let errorMessage = null;
-    
+
     try {
         switch (event) {
             case "payment.verified":
@@ -622,11 +728,11 @@ router.post("/shegerpay", async (req, res) => {
                     errorMessage = "No pending transaction found matching this payment";
                 }
                 break;
-                
+
             case "payment.failed":
                 processed = await handlePaymentFailed(data);
                 break;
-                
+
             default:
                 console.log(`ℹ️ Unhandled webhook event: ${event}`);
                 processed = true; // Acknowledge receipt even if not processed
@@ -636,14 +742,14 @@ router.post("/shegerpay", async (req, res) => {
         errorMessage = error.message;
         processed = false;
     }
-    
+
     // 4. Log delivery
     const processingTime = Date.now() - startTime;
     await logWebhookDelivery(
-        event, deliveryId, signatureValid, data, 
+        event, deliveryId, signatureValid, data,
         processed, errorMessage, processingTime
     );
-    
+
     // 5. Return response
     const statusCode = processed ? 200 : 500;
     res.status(statusCode).json({
@@ -660,14 +766,14 @@ router.post("/shegerpay", async (req, res) => {
 router.get("/status", async (req, res) => {
     try {
         const secret = await getWebhookSecret();
-        
+
         const recentDeliveries = await db.query(
             `SELECT event_type, signature_valid, processed, error_message, processing_time_ms, created_at 
              FROM webhook_deliveries 
              ORDER BY created_at DESC 
              LIMIT 10`
         );
-        
+
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
         const recentStats = await db.query(
             `SELECT 
@@ -679,7 +785,7 @@ router.get("/status", async (req, res) => {
              WHERE created_at > $1`,
             [oneHourAgo]
         );
-        
+
         res.json({
             configured: !!secret,
             hasSecret: !!secret,
@@ -714,15 +820,15 @@ if (process.env.ENABLE_WEBHOOK_TEST === 'true') {
                     verified_at: new Date().toISOString()
                 }
             };
-            
+
             console.log("🧪 Test webhook payload:", testPayload);
-            
+
             const result = await handlePaymentVerified(testPayload.data, 'test_' + Date.now());
-            
-            res.json({ 
-                success: true, 
+
+            res.json({
+                success: true,
                 processed: result,
-                testPayload: testPayload.data 
+                testPayload: testPayload.data
             });
         } catch (error) {
             res.status(500).json({ error: error.message });

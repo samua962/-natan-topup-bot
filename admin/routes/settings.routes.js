@@ -16,7 +16,7 @@ router.get("/", async (req, res) => {
 // UPDATE setting
 router.post("/", async (req, res) => {
     const { key, value } = req.body;
-    
+
     if (!key || !value) {
         return res.status(400).json({ error: "Key and value are required" });
     }
@@ -41,7 +41,7 @@ router.post("/", async (req, res) => {
 router.get("/payment-methods", async (req, res) => {
     try {
         const result = await db.query("SELECT value FROM settings WHERE key='payment_info'");
-        
+
         let paymentMethods = { methods: [] };
         if (result.rows[0]?.value) {
             try {
@@ -50,7 +50,7 @@ router.get("/payment-methods", async (req, res) => {
                 console.error("Parse error:", e);
             }
         }
-        
+
         res.json(paymentMethods);
     } catch (error) {
         console.error("GET payment methods error:", error);
@@ -61,14 +61,14 @@ router.get("/payment-methods", async (req, res) => {
 // UPDATE payment methods
 router.put("/payment-methods", async (req, res) => {
     const { methods } = req.body;
-    
+
     if (!methods || !Array.isArray(methods)) {
         return res.status(400).json({ error: "Methods array is required" });
     }
 
     try {
         const paymentInfo = JSON.stringify({ methods });
-        
+
         await db.query(
             `INSERT INTO settings (key, value)
              VALUES ('payment_info', $1)
@@ -99,7 +99,7 @@ router.get("/banner", async (req, res) => {
 // UPDATE main menu banner
 router.put("/banner", async (req, res) => {
     const { url } = req.body;
-    
+
     if (!url) {
         return res.status(400).json({ error: "URL is required" });
     }
@@ -134,7 +134,7 @@ router.get("/webhook-secret", async (req, res) => {
 // UPDATE webhook secret
 router.post("/webhook-secret", async (req, res) => {
     const { secret } = req.body;
-    
+
     if (!secret || secret.length < 32) {
         return res.status(400).json({ error: "Secret must be at least 32 characters" });
     }
@@ -152,6 +152,41 @@ router.post("/webhook-secret", async (req, res) => {
     } catch (error) {
         console.error("UPDATE webhook secret error:", error);
         res.status(500).json({ error: "Failed to update webhook secret" });
+    }
+});
+
+// GET Verify.ET webhook secret
+router.get("/verify-et-webhook-secret", async (req, res) => {
+    try {
+        const result = await db.query("SELECT value FROM settings WHERE key='verify_et_webhook_secret'");
+        res.json({ secret: result.rows[0]?.value || null });
+    } catch (error) {
+        console.error("GET verify-et webhook secret error:", error);
+        res.status(500).json({ error: "Failed to fetch Verify.ET webhook secret" });
+    }
+});
+
+// UPDATE Verify.ET webhook secret
+router.post("/verify-et-webhook-secret", async (req, res) => {
+    const { secret } = req.body;
+
+    if (!secret || secret.length < 32) {
+        return res.status(400).json({ error: "Secret must be at least 32 characters" });
+    }
+
+    try {
+        await db.query(
+            `INSERT INTO settings (key, value)
+             VALUES ('verify_et_webhook_secret', $1)
+             ON CONFLICT (key)
+             DO UPDATE SET value = $1`,
+            [secret]
+        );
+
+        res.json({ success: true, message: "Verify.ET webhook secret updated" });
+    } catch (error) {
+        console.error("UPDATE verify-et webhook secret error:", error);
+        res.status(500).json({ error: "Failed to update Verify.ET webhook secret" });
     }
 });
 
