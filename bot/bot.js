@@ -377,6 +377,8 @@ async function extractTxIdFromImage(imageFileId) {
             /Transaction\s*(?:No|Number|ID|#)[:\s]*([A-Za-z0-9]{6,30})/i,
             /Reference\s*(?:No|Number|ID)?[:\s]*([A-Za-z0-9]{6,30})/i,
             /Receipt\s*(?:No|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
+            // Telebirr: IDs starting with DFT (e.g. DFT9DQYRVD, DFT9DL75DP)
+            /\b(DFT[A-Z0-9]{6,20})\b/i,
             /FT[:\s#]*([A-Za-z0-9]{6,30})/i,
             /Trx\s*(?:No|ID|Number)?[:\s]*([A-Za-z0-9]{6,30})/i,
             // Telebirr: standalone alphanumeric IDs like DFP79MDWL5, BCA12XYZQ3
@@ -528,7 +530,9 @@ async function extractTxIdFromImage(imageFileId) {
         txId = txId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 40);
 
         // Check if "FT" prefix is nearby (for BOA)
-        if (!txId.toUpperCase().startsWith('FT') && fullText) {
+        // Skip this logic if the ID already contains "FT" anywhere (e.g. DFT9DQYRVD) to avoid corruption
+        const txIdUpper = txId.toUpperCase();
+        if (!txIdUpper.startsWith('FT') && !txIdUpper.includes('FT') && fullText) {
             const escapedTxId = txId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const ftPattern = new RegExp(`FT\\s*${escapedTxId}`, 'i');
             if (ftPattern.test(fullText)) {
