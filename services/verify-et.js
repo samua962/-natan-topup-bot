@@ -58,9 +58,9 @@ function resolveVerifyEtBank(methodName) {
     if (name.includes("abyssinia") || name.includes("boa")) {
         return "boa";
     }
-    // "ebirr", "e-birr", "kaafi"
-    if (name.includes("ebirr") || name.includes("e-birr") || name.includes("kaafi")) {
-        return "ebirr";
+    // "ebirr", "e-birr", "e birr", "kaafi" → Verify.ET identifier is "kaafiebirr"
+    if (name.includes("ebirr") || name.includes("e-birr") || name.includes("e birr") || name.includes("kaafi")) {
+        return "kaafiebirr";
     }
     // "mpesa" or "m-pesa"
     if (name.includes("mpesa") || name.includes("m-pesa")) {
@@ -88,7 +88,7 @@ function resolveVerifyEtBank(methodName) {
  * @returns {Object}
  */
 function buildVerifyEtPayload(bank, transactionId, extra = {}) {
-    const { settlementAccount, phone } = extra;
+    const { settlementAccount, phone, senderAccount } = extra;
 
     let body;
 
@@ -108,11 +108,12 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
             body = {
                 bank: "boa",
                 referenceNumber: transactionId,
-                // Last 5 digits of the settlement account
+                // Last 5 digits of the receiver/settlement account (required by Verify.ET)
                 accountSuffix: settlementAccount
                     ? String(settlementAccount).replace(/\D/g, "").slice(-5)
                     : undefined,
             };
+            // Note: senderAccount is NOT a Verify.ET documented field for BOA — omit it
             break;
 
         case "telebirr":
@@ -131,7 +132,13 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
             };
             break;
 
-        // dashen, awash, birhan, siinqee, ebirr — all use referenceNumber
+        case "kaafiebirr":
+            // Verify.ET docs: requires referenceNumber (Transfer-Id or receipt URL), phone optional
+            body = { bank: "kaafiebirr", referenceNumber: transactionId };
+            if (phone) body.phone = String(phone);
+            break;
+
+        // dashen, awash, birhan, siinqee — all use referenceNumber
         default:
             body = { bank, referenceNumber: transactionId };
             break;
@@ -139,11 +146,6 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
 
     // Remove undefined values produced above (e.g. accountSuffix when no settlementAccount)
     Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
-
-    // Attach settlementAccount when provided (lets Verify.ET do server-side matching)
-    if (settlementAccount) {
-        body.settlementAccount = settlementAccount;
-    }
 
     return body;
 }
@@ -233,6 +235,7 @@ async function pollVerification(requestId, opts = {}) {
  * @param {Object} [options={}]
  * @param {string} [options.settlementAccount] - Full merchant account number
  * @param {string} [options.phone]             - Sender phone (cbebirr)
+ * @param {string} [options.senderAccount]     - Sender account number (BOA)
  * @returns {Promise<{verified: boolean, data?: Object, error?: string}>}
  */
 async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, options = {}) {
@@ -259,17 +262,28 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
     const requestBody = buildVerifyEtPayload(bank, transactionId, {
         settlementAccount: options.settlementAccount,
         phone: options.phone,
+        senderAccount: options.senderAccount,
     });
 
-    const MAX_RETRIES = 2; // up to 3 total attempts
+    const MAX_RETRIES = 2; // default: up to 3 total attempts
 
     let lastError = null;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // BOA and Telebirr transactions can take time to propagate in Verify.ET
+    const effectiveMaxRetries =
+        bank === "boa" ? 4 :         // up to 5 attempts for BOA (slow propagation)
+            bank === "telebirr" ? 4 :    // up to 5 attempts for Telebirr
+                MAX_RETRIES;
+
+    // Per-bank not-found retry delays
+    const boaRetryDelays = [5000, 10000, 20000, 30000]; // 5s, 10s, 20s, 30s
+    const telebirrRetryDelays = [5000, 8000, 12000, 15000]; // 5s, 8s, 12s, 15s
+
+    for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
         if (attempt > 0) {
-            const backoffMs = Math.pow(2, attempt - 1) * 1000; // 1s, 2s
+            const backoffMs = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s, 8s
             console.log(
-                `[verify-et] Retrying (attempt ${attempt + 1}/3) in ${backoffMs}ms — bank=${bank} txId=${transactionId}`
+                `[verify-et] Retrying (attempt ${attempt + 1}/${effectiveMaxRetries + 1}) in ${backoffMs}ms — bank=${bank} txId=${transactionId}`
             );
             await sleep(backoffMs);
         }
@@ -278,12 +292,13 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
         console.log(
             `[verify-et] Calling Verify.ET — bank=${bank} txId=${transactionId} expectedAmount=${expectedAmount} attempt=${attempt + 1}`
         );
+        console.log(`[verify-et] Request body:`, JSON.stringify(requestBody));
 
         try {
             const res = await axios.post(
-                `${VERIFY_ET_BASE}?waitMs=8000`,
+                `${VERIFY_ET_BASE}?waitMs=${bank === "boa" ? 15000 : bank === "telebirr" ? 12000 : 8000}`,
                 requestBody,
-                { headers: requestHeaders, timeout: 30000 }
+                { headers: requestHeaders, timeout: 35000 }
             );
 
             console.log(`[verify-et] Response — HTTP ${res.status} verified=${res.data?.verified}`);
@@ -298,11 +313,17 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
                 const notFound = topStatus === "not_found" ||
                     (body.message || "").toLowerCase().includes("not found") ||
                     (body.message || "").toLowerCase().includes("no telebirr") ||
+                    (body.message || "").toLowerCase().includes("no boa") ||
+                    (body.message || "").toLowerCase().includes("no ebirr") ||
+                    (body.message || "").toLowerCase().includes("no kaafi") ||
                     (body.message || "").toLowerCase().includes("no transaction");
 
-                if (notFound && attempt < MAX_RETRIES) {
-                    const backoffMs = (attempt + 1) * 5000; // 5s, 10s
-                    console.log(`[verify-et] Transaction not found yet, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                if (notFound && attempt < effectiveMaxRetries) {
+                    const backoffMs =
+                        bank === "boa" ? (boaRetryDelays[attempt] || 30000) :
+                            bank === "telebirr" ? (telebirrRetryDelays[attempt] || 15000) :
+                                (attempt + 1) * 5000;
+                    console.log(`[verify-et] Transaction not found yet, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${effectiveMaxRetries + 1})`);
                     await sleep(backoffMs);
                     continue;
                 }
@@ -349,7 +370,7 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
 
             lastError = errMsg;
 
-            if (attempt < MAX_RETRIES) {
+            if (attempt < effectiveMaxRetries) {
                 // Will retry in the next loop iteration
                 continue;
             }
@@ -514,11 +535,21 @@ function checkDuplicate(data) {
 
 /**
  * Checks settlementAccountMatch field (Req 7).
+ * Only reject if the transaction was actually FOUND but sent to the wrong account.
+ * If the transaction was never found (reason === "verification_not_successful"),
+ * skip this check — the "not found" error is returned earlier upstream.
  * @returns {Object|null}
  */
 function checkSettlementAccountMatch(data) {
     if (!data.settlementAccountMatch) return null;
-    if (data.settlementAccountMatch.matched === false) {
+    const sam = data.settlementAccountMatch;
+    if (sam.matched === false) {
+        // If the reason is that the transaction itself wasn't found,
+        // don't show a misleading "wrong account" error.
+        const reason = (sam.reason || "").toLowerCase();
+        if (reason === "verification_not_successful" || reason === "not_found") {
+            return null; // let the upstream not_found handling report the real error
+        }
         return {
             verified: false,
             error:

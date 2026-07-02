@@ -53,7 +53,7 @@ function resolveShegerPayProvider(methodName) {
     if (name.includes("dashen")) return "dashen";
     if (name.includes("birhan")) return "birhan";
     if (name.includes("abyssinia") || name.includes("boa")) return "boa";
-    if (name.includes("ebirr") || name.includes("e-birr")) return "ebirr_kaafi";
+    if (name.includes("ebirr") || name.includes("e-birr") || name.includes("e birr")) return "ebirr_kaafi";
     if (name.includes("mpesa") || name.includes("m-pesa")) return "mpesa";
     return null;
 }
@@ -278,6 +278,7 @@ async function verifyPayment(methodName, transactionId, expectedAmount, options 
         return verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, {
             settlementAccount: options.settlementAccount,
             phone: options.phone,
+            senderAccount: options.senderAccount,
         });
     }
     // ShegerPay path (unchanged)
@@ -3190,23 +3191,17 @@ bot.on("photo", async (ctx) => {
                 const provider = resolveShegerPayProvider(method?.name) || "telebirr";
                 const expectedRecipient = method?.account_number || null;
 
-                // BOA requires sender account, so pause here and collect it from the user.
+                console.log(`💳 Deposit method: "${method?.name}" → provider: "${provider}"`);
+
+                // BOA: go straight to verification — Verify.ET only needs referenceNumber + accountSuffix
                 let senderAccount = null;
                 let finalTxId = extractedTxId;
 
                 if (provider === "boa") {
+                    // Store state in case verification fails and we need it for manual review
                     userState[userId].extractedTxId = extractedTxId;
                     userState[userId].ocrFullText = ocrFullText;
                     userState[userId].depositPaymentFileId = fileId;
-                    userState[userId].step = "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT";
-
-                    try {
-                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                            "Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    } catch (e) {
-                        await ctx.reply("Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId + "\n\nFor BOA deposit verification, please enter your full sender account number.\n\nExample: 1234567890123\n\nType /cancel to cancel.", { parse_mode: "HTML" });
-                    }
-                    return;
                 }
 
                 const verification = await verifyPayment(method?.name || provider, finalTxId, depositAmount, {
