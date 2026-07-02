@@ -648,6 +648,36 @@ async function getProfitMargin(usdPrice) {
 }
 
 // =====================
+// 🟢 BUILD USER CREDENTIALS (for admin notifications)
+// Returns a string with all user-submitted credentials/inputs
+// =====================
+function buildCredentialsBlock(userInputs, playerId, playerName) {
+    let block = "";
+    const inputs = userInputs
+        ? (typeof userInputs === "string" ? (() => { try { return JSON.parse(userInputs); } catch (e) { return null; } })() : userInputs)
+        : null;
+
+    if (playerId) block += `\n🎮 Player ID: ${playerId}`;
+    if (playerName) block += `\n👤 Player Name: ${playerName}`;
+    if (inputs) {
+        if (inputs.email) block += `\n📧 Email: ${inputs.email}`;
+        if (inputs.phone) block += `\n📱 Phone: ${inputs.phone}`;
+        if (inputs.username) block += `\n👤 Username: ${inputs.username}`;
+        if (inputs.password) block += `\n🔐 Password: ${inputs.password}`;
+        if (inputs.player_id && inputs.player_id !== playerId)
+            block += `\n🆔 Player ID: ${inputs.player_id}`;
+        if (inputs.region) block += `\n🌍 Region: ${inputs.region}`;
+        if (inputs.server) block += `\n🖥️ Server: ${inputs.server}`;
+        // Any other custom fields
+        const known = new Set(["email", "phone", "username", "password", "player_id", "region", "server"]);
+        for (const [k, v] of Object.entries(inputs)) {
+            if (!known.has(k) && v) block += `\n📌 ${k}: ${v}`;
+        }
+    }
+    return block;
+}
+
+// =====================
 // 🟢 BUILD ORDER DETAILS (safe parsing)
 // =====================
 function buildOrderDetails(order) {
@@ -1267,6 +1297,40 @@ async function showBankTransferMethods(ctx, productInfo) {
 // 🟢 SHOW PAYMENT DETAILS
 // =====================
 async function showPaymentDetails(ctx, paymentMethod, productInfo) {
+    const userId = ctx.from.id;
+    if (!userState[userId]) userState[userId] = {};
+    userState[userId].paymentMethod = paymentMethod;
+    userState[userId].productInfo = productInfo;
+
+    // eBirr: ask for SMS text instead of screenshot — Verify.ET needs the Transfer-Id or receipt URL
+    const methodNameLower = (paymentMethod.name || "").toLowerCase();
+    const isEbirr = methodNameLower.includes("ebirr") || methodNameLower.includes("e-birr") ||
+        methodNameLower.includes("e birr") || methodNameLower.includes("kaafi");
+
+    if (isEbirr) {
+        userState[userId].step = "EBIRR_SMS_WAITING";
+        const msg = `📦 Product: ${productInfo.name}
+💰 Amount: ${productInfo.price} ETB
+
+📱 ${paymentMethod.name}
+📞 Account: ${paymentMethod.account_number}
+👤 Name: ${paymentMethod.account_name || "N/A"}
+
+━━━━━━━━━━━━━━━━━━━━
+🔹 INSTRUCTIONS:
+1️⃣ Copy account & verify name.
+2️⃣ Send EXACTLY ${productInfo.price} ETB.
+3️⃣ After payment, <b>copy and paste the SMS</b> you receive from eBirr here.
+
+📌 Example SMS:
+<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB880 to amanuel hailu Batru(974771443) at 01/07/26 13:37:39, Your Balance is ETB19.67.</code>
+
+⏳ Order expires in 30 minutes.
+Type /cancel to cancel.`;
+        await ctx.reply(msg, { parse_mode: "HTML" });
+        return;
+    }
+
     const shortCaption = `
 📦 Product: ${productInfo.name}
 💰 Amount: ${productInfo.price} ETB
@@ -1291,10 +1355,6 @@ By paying, you confirm you are 18+ and agree to our Terms.
 Type /cancel to cancel.
     `;
 
-    const userId = ctx.from.id;
-    if (!userState[userId]) userState[userId] = {};
-    userState[userId].paymentMethod = paymentMethod;
-    userState[userId].productInfo = productInfo;
     userState[userId].step = "PAY";
 
     if (paymentMethod.image_url && paymentMethod.image_url.trim() !== "") {
@@ -1840,7 +1900,7 @@ bot.command("announcement", async (ctx) => {
 
     // Check admin authorization
     if (userId !== adminId) {
-        await ctx.reply("❌ You are not authorized to use this command.\n\nOnly admins can broadcast announcements.");
+        await ctx.reply("❌  You are not authorized to use this command.\n\nOnly admins can broadcast announcements.");
         return;
     }
 
@@ -2026,6 +2086,19 @@ bot.on("callback_query", async (ctx) => {
         }
         userState[userId].depositMethod = selectedMethod;
         userState[userId].depositAmount = amount;
+
+        // eBirr: ask for SMS text instead of screenshot
+        const methodNameLower = (selectedMethod.name || "").toLowerCase();
+        const isEbirr = methodNameLower.includes("ebirr") || methodNameLower.includes("e-birr") ||
+            methodNameLower.includes("e birr") || methodNameLower.includes("kaafi");
+
+        if (isEbirr) {
+            userState[userId].step = "EBIRR_DEPOSIT_SMS_WAITING";
+            const msg = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n📱 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n━━━━━━━━━━━━━━━━━━━━\n🔹 INSTRUCTIONS:\n1️⃣ Send payment via eBirr.\n2️⃣ <b>Copy and paste the SMS</b> you receive here.\n\n📌 Example SMS:\n<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB500 to amanuel hailu Batru(974771443) at 01/07/26 13:37:39, Your Balance is ETB19.67.</code>\n\nType /cancel to cancel`;
+            await ctx.reply(msg, { parse_mode: "HTML" });
+            return;
+        }
+
         userState[userId].step = "DEPOSIT_PAYMENT_WAITING";
         const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "Send payment screenshot here after transfer"}\n\n⚠️ Send the screenshot in this chat\nType /cancel to cancel`;
         await ctx.reply(details, { parse_mode: "HTML" });
@@ -2644,6 +2717,188 @@ bot.on("text", async (ctx) => {
         }
     }
 
+    // Handle eBirr SMS text for order payment verification
+    if (state?.step === "EBIRR_SMS_WAITING") {
+        const smsText = text.trim();
+        const product = state.productInfo;
+        const method = state.paymentMethod;
+
+        if (!product || !method) {
+            delete userState[userId];
+            return ctx.reply("⚠️ Session expired. Please start your order again.", { parse_mode: "HTML" });
+        }
+
+        // Extract Transfer-Id from SMS text
+        // Format: "Transfer-Id: 802103540706," or "Transfer-Id: 802103540706 "
+        let transferId = null;
+
+        // Try Transfer-Id pattern first (eBirr KAAFI SMS format)
+        const transferIdMatch = smsText.match(/Transfer[-\s]*Id[:\s]+([0-9]{6,20})/i);
+        if (transferIdMatch) {
+            transferId = transferIdMatch[1].trim();
+        }
+
+        // Try receipt URL (https://receipt.ebirr.com/...)
+        if (!transferId) {
+            const urlMatch = smsText.match(/(https?:\/\/receipt\.ebirr\.com\/[^\s]+)/i);
+            if (urlMatch) {
+                transferId = urlMatch[1].trim();
+            }
+        }
+
+        // Try any numeric Transfer ID pattern
+        if (!transferId) {
+            const numMatch = smsText.match(/\b([0-9]{9,15})\b/);
+            if (numMatch) {
+                transferId = numMatch[1];
+            }
+        }
+
+        if (!transferId) {
+            return ctx.reply(
+                "❌ Could not find Transfer-Id in your message.\n\nPlease paste the full SMS text from eBirr.\n\nExample:\n<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB880...</code>\n\nType /cancel to cancel.",
+                { parse_mode: "HTML" }
+            );
+        }
+
+        const verifyingMsg = await ctx.reply(`🔍 Found Transfer-Id: <code>${transferId}</code>\n⏳ Verifying with eBirr...`, { parse_mode: "HTML" });
+
+        // Create the order first
+        let userInputs = {};
+        let extractedPlayerId = null, extractedPlayerName = null;
+        if (state.collectedData) { userInputs = state.collectedData; extractedPlayerId = state.collectedData.player_id; }
+        if (state.playerId && !extractedPlayerId) { extractedPlayerId = state.playerId; extractedPlayerName = state.playerName || null; }
+
+        const productIdToInsert = product.type === "database" ? product.productId : null;
+        const externalProductId = product.type === "ragner" ? product.productId : null;
+
+        const orderResult = await db.query(
+            `INSERT INTO orders (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, delivery_type, status, payment_method, transaction_id, player_id, player_name, user_inputs)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10, $11, $12) RETURNING id`,
+            [userId, ctx.from.username || null, productIdToInsert, externalProductId,
+                product.name, product.price, "manual", method.name,
+                transferId, extractedPlayerId || null, extractedPlayerName || null,
+                JSON.stringify(userInputs)]
+        );
+        const orderId = orderResult.rows[0].id;
+        userState[userId].orderId = orderId;
+
+        const verification = await verifyPayment(method.name, transferId, parseFloat(product.price), {
+            settlementAccount: method.account_number || null,
+        });
+
+        if (verification.verified) {
+            await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1 WHERE id=$2`, [transferId, orderId]);
+            try {
+                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                    `✅ Payment verified!\n\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\nYour order is being processed. You will be notified when complete.`,
+                    { parse_mode: "HTML" });
+            } catch (e) { await ctx.reply(`✅ Payment verified! Order #${orderId} approved.`, { parse_mode: "HTML" }); }
+
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                `✅ AUTO-VERIFIED eBirr ORDER #${orderId}\n👤 User: @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName),
+                { reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }]] } }
+            );
+        } else {
+            try {
+                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                    `⚠️ Could not verify automatically.\n\nYour order has been submitted for manual review.\n❌ Error: ${verification.error || "Not found"}\n\nYou will be notified when approved.`,
+                    { parse_mode: "HTML" });
+            } catch (e) { await ctx.reply("⚠️ Submitted for manual review.", { parse_mode: "HTML" }); }
+
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                `📥 NEW ORDER (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\n🧾 Order ID: #${orderId}\n💳 Method: ${method.name}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}` +
+                buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
+                `\n\nUse buttons below to manage:`,
+                { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }]] } }
+            );
+        }
+
+        delete userState[userId];
+        setTimeout(() => showMainMenu(ctx), 3000);
+        return;
+    }
+
+    // Handle eBirr SMS text for DEPOSIT verification
+    if (state?.step === "EBIRR_DEPOSIT_SMS_WAITING") {
+        const smsText = text.trim();
+        const method = state.depositMethod;
+        const depositAmount = state.depositAmount;
+
+        if (!method || !depositAmount) {
+            delete userState[userId];
+            return ctx.reply("⚠️ Session expired. Please start the deposit again.", { parse_mode: "HTML" });
+        }
+
+        // Extract Transfer-Id from SMS text
+        let transferId = null;
+        const transferIdMatch = smsText.match(/Transfer[-\s]*Id[:\s]+([0-9]{6,20})/i);
+        if (transferIdMatch) transferId = transferIdMatch[1].trim();
+
+        if (!transferId) {
+            const urlMatch = smsText.match(/(https?:\/\/receipt\.ebirr\.com\/[^\s]+)/i);
+            if (urlMatch) transferId = urlMatch[1].trim();
+        }
+        if (!transferId) {
+            const numMatch = smsText.match(/\b([0-9]{9,15})\b/);
+            if (numMatch) transferId = numMatch[1];
+        }
+
+        if (!transferId) {
+            return ctx.reply(
+                "❌ Could not find Transfer-Id in your message.\n\nPlease paste the full SMS text from eBirr.\n\nType /cancel to cancel.",
+                { parse_mode: "HTML" }
+            );
+        }
+
+        const verifyingMsg = await ctx.reply(`🔍 Found Transfer-Id: <code>${transferId}</code>\n⏳ Verifying...`, { parse_mode: "HTML" });
+
+        const verification = await verifyPayment(method.name, transferId, parseFloat(depositAmount), {
+            settlementAccount: method.account_number || null,
+        });
+
+        if (verification.verified) {
+            // Duplicate check
+            const existingDeposit = await db.query("SELECT id FROM deposit_requests WHERE transaction_id=$1 AND status='APPROVED'", [transferId]);
+            const existingOrder = await db.query("SELECT id FROM orders WHERE transaction_id=$1 AND status IN ('APPROVED','COMPLETED')", [transferId]);
+            if (existingDeposit.rows.length > 0 || existingOrder.rows.length > 0) {
+                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, "⚠️ This transaction has already been used.", { parse_mode: "HTML" }); } catch (e) { }
+                delete userState[userId];
+                return;
+            }
+
+            const result = await db.query(
+                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
+                 VALUES ($1, $2, $3, NULL, 'APPROVED', CURRENT_TIMESTAMP, $4) RETURNING id`,
+                [userId, depositAmount, method.name, transferId]
+            );
+            const depositId = result.rows[0].id;
+            await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit ${depositAmount} ETB (TX: ${transferId})`);
+
+            try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB verified!\n\nTX: ${transferId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" }); } catch (e) { }
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified eBirr deposit #${depositId}\n👤 @${ctx.from.username || userId}\n💰 ${depositAmount} ETB\n🔑 TX: ${transferId}`);
+        } else {
+            try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.`, { parse_mode: "HTML" }); } catch (e) { }
+
+            const depositResult = await db.query(
+                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
+                 VALUES ($1, $2, $3, NULL, 'PENDING', $4) RETURNING id`,
+                [userId, depositAmount, method.name, transferId]
+            );
+            const depositId = depositResult.rows[0].id;
+
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                `💰 NEW eBirr DEPOSIT (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Request ID: #${depositId}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}\n\nUse buttons below to manage:`,
+                { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] } }
+            );
+        }
+
+        delete userState[userId];
+        setTimeout(() => showMainMenu(ctx), 3000);
+        return;
+    }
+
     // Handle BOA sender account for wallet deposit verification.
     if (state?.step === "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT") {
         const senderAccount = text.trim().replace(/\s/g, "");
@@ -2910,13 +3165,9 @@ bot.on("text", async (ctx) => {
                 `Method: ${method?.name || "Bank of Abyssinia"}\n` +
                 `OCR TX ID: ${extractedTxId}\n` +
                 `Sender Account: ${senderAccount}\n` +
-                `Error: ${verification.error}\n`;
-
-            if (extractedPlayerId) {
-                adminCaption += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminCaption += `Player Name: ${extractedPlayerName}\n`;
-            }
-            adminCaption += `\nUse buttons below to manage:`;
+                `Error: ${verification.error}` +
+                buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                `\n\nUse buttons below to manage:`;
 
             const adminMarkup = {
                 reply_markup: {
@@ -3015,7 +3266,8 @@ bot.on("text", async (ctx) => {
                         `Product: ${product.name}\n` +
                         `Amount: ${product.price} ETB\n` +
                         `TX ID: ${extractedTxId}\n` +
-                        `Sender Account: ${senderAccount}`
+                        `Sender Account: ${senderAccount}` +
+                        buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName)
                     );
                 } else {
                     await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
@@ -3024,10 +3276,9 @@ bot.on("text", async (ctx) => {
                             "✅ Payment verified!\n\n⚠️ Auto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
                     } catch (e) { }
 
-                    let adminMsg = `Order #${orderId} BOA payment verified but auto-delivery failed\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-                    if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                    if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-                    adminMsg += `\nClick "Complete" after manual delivery.`;
+                    let adminMsg = `Order #${orderId} BOA payment verified but auto-delivery failed\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
+                        buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                        `\n\nClick "Complete" after manual delivery.`;
 
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                         reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3040,10 +3291,9 @@ bot.on("text", async (ctx) => {
                         "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                 } catch (e) { }
 
-                let adminMsg = `Order #${orderId} BOA payment verified (Ragner error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-                if (extractedPlayerId) adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-                adminMsg += `\nRagner error: ${ragnerError.message}\nClick "Complete" after manual delivery.`;
+                let adminMsg = `Order #${orderId} BOA payment verified (Ragner error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
+                    buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                    `\n\nRagner error: ${ragnerError.message}\nClick "Complete" after manual delivery.`;
 
                 await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                     reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3056,12 +3306,9 @@ bot.on("text", async (ctx) => {
                     "Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
             } catch (e) { }
 
-            let adminMsg = `Order #${orderId} automatically approved (BOA verified)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}\n`;
-            if (extractedPlayerId) {
-                adminMsg += `\nPlayer ID: ${extractedPlayerId}\n`;
-                if (extractedPlayerName) adminMsg += `Player Name: ${extractedPlayerName}\n`;
-            }
-            adminMsg += `\nClick "Complete" after manual delivery.`;
+            let adminMsg = `Order #${orderId} automatically approved (BOA verified)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
+                buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                `\n\nClick "Complete" after manual delivery.`;
 
             await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                 reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3566,7 +3813,8 @@ bot.on("photo", async (ctx) => {
                                     `User: @${ctx.from.username || userId}\n` +
                                     `Product: ${product.name}\n` +
                                     `Amount: ${product.price} ETB\n` +
-                                    `TX ID: ${extractedTxId}`
+                                    `TX ID: ${extractedTxId}` +
+                                    buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName)
                                 );
                             } else {
                                 await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
@@ -3575,10 +3823,9 @@ bot.on("photo", async (ctx) => {
                                         "✅ Payment verified!\n\nAuto-delivery failed. Our team will complete your order shortly.", { parse_mode: "HTML" });
                                 } catch (e) { }
 
-                                let adminMsg = `🟡 Order #${orderId} payment verified but auto-delivery failed\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
-                                if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
-                                if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
-                                adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                                let adminMsg = `🟡 Order #${orderId} payment verified but auto-delivery failed\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
+                                    buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                                    `\n\n👇 Click "Complete" after manual delivery.`;
 
                                 await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                     reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3591,10 +3838,9 @@ bot.on("photo", async (ctx) => {
                                     "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                             } catch (e) { }
 
-                            let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
-                            if (extractedPlayerId) adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
-                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
-                            adminMsg += `\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
+                            let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
+                                buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                                `\n\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
 
                             await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                 reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3608,12 +3854,9 @@ bot.on("photo", async (ctx) => {
                                 "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                         } catch (e) { }
 
-                        let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\n`;
-                        if (extractedPlayerId) {
-                            adminMsg += `\n🎮 Player ID: ${extractedPlayerId}\n`;
-                            if (extractedPlayerName) adminMsg += `👤 Player Name: ${extractedPlayerName}\n`;
-                        }
-                        adminMsg += `\n👇 Click "Complete" after manual delivery.`;
+                        let adminMsg = `✅ Order #${orderId} automatically approved (ShegerPay verified)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
+                            buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                            `\n\n👇 Click "Complete" after manual delivery.`;
 
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                             reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -3673,14 +3916,9 @@ bot.on("photo", async (ctx) => {
                         `🧾 Order ID: #${orderId}\n` +
                         `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
                         `🔍 OCR TX ID: ${extractedTxId}\n` +
-                        `❌ Error: ${verification.error}\n`;
-
-                    if (extractedPlayerId) {
-                        adminCaption += `\n🎮 Player ID: ${extractedPlayerId}\n`;
-                        if (extractedPlayerName) adminCaption += `👤 Player Name: ${extractedPlayerName}\n`;
-                    }
-
-                    adminCaption += `\nUse buttons below to manage:`;
+                        `❌ Error: ${verification.error}\n` +
+                        buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                        `\n\nUse buttons below to manage:`;
 
                     await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
                         caption: adminCaption,
@@ -3708,14 +3946,9 @@ bot.on("photo", async (ctx) => {
                     `📦 Product: ${product.name}\n` +
                     `💰 Amount: ${product.price} ETB\n` +
                     `🧾 Order ID: #${orderId}\n` +
-                    `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n`;
-
-                if (extractedPlayerId) {
-                    adminCaption += `\n🎮 Player ID: ${extractedPlayerId}\n`;
-                    if (extractedPlayerName) adminCaption += `👤 Player Name: ${extractedPlayerName}\n`;
-                }
-
-                adminCaption += `\nUse buttons below to manage:`;
+                    `💳 Method: ${state.paymentMethod?.name || "Bank Transfer"}\n` +
+                    buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
+                    `\n\nUse buttons below to manage:`;
 
                 await ctx.telegram.sendPhoto(process.env.ADMIN_ID, fileId, {
                     caption: adminCaption,
