@@ -53,7 +53,8 @@ function resolveShegerPayProvider(methodName) {
     if (name.includes("dashen")) return "dashen";
     if (name.includes("birhan")) return "birhan";
     if (name.includes("abyssinia") || name.includes("boa")) return "boa";
-    if (name.includes("ebirr") || name.includes("e-birr") || name.includes("e birr")) return "ebirr_kaafi";
+    if ((name.includes("ebirr") || name.includes("e-birr") || name.includes("e birr")) &&
+        !name.includes("tele") && !name.includes("cbe")) return "ebirr_kaafi";
     if (name.includes("mpesa") || name.includes("m-pesa")) return "mpesa";
     return null;
 }
@@ -1303,9 +1304,12 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
     userState[userId].productInfo = productInfo;
 
     // eBirr: ask for SMS text instead of screenshot — Verify.ET needs the Transfer-Id or receipt URL
+    // Strict match: must be eBirr/Kaafi specifically, NOT telebirr or cbebirr
     const methodNameLower = (paymentMethod.name || "").toLowerCase();
-    const isEbirr = methodNameLower.includes("ebirr") || methodNameLower.includes("e-birr") ||
-        methodNameLower.includes("e birr") || methodNameLower.includes("kaafi");
+    const isEbirr = (methodNameLower.includes("kaafi") ||
+        /\be[\s-]?birr\b/.test(methodNameLower)) &&
+        !methodNameLower.includes("tele") &&
+        !methodNameLower.includes("cbe");
 
     if (isEbirr) {
         userState[userId].step = "EBIRR_SMS_WAITING";
@@ -2088,9 +2092,12 @@ bot.on("callback_query", async (ctx) => {
         userState[userId].depositAmount = amount;
 
         // eBirr: ask for SMS text instead of screenshot
+        // Strict match: must be eBirr/Kaafi specifically, NOT telebirr or cbebirr
         const methodNameLower = (selectedMethod.name || "").toLowerCase();
-        const isEbirr = methodNameLower.includes("ebirr") || methodNameLower.includes("e-birr") ||
-            methodNameLower.includes("e birr") || methodNameLower.includes("kaafi");
+        const isEbirr = (methodNameLower.includes("kaafi") ||
+            /\be[\s-]?birr\b/.test(methodNameLower)) &&
+            !methodNameLower.includes("tele") &&
+            !methodNameLower.includes("cbe");
 
         if (isEbirr) {
             userState[userId].step = "EBIRR_DEPOSIT_SMS_WAITING";

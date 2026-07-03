@@ -59,7 +59,9 @@ function resolveVerifyEtBank(methodName) {
         return "boa";
     }
     // "ebirr", "e-birr", "e birr", "kaafi" → Verify.ET identifier is "kaafiebirr"
-    if (name.includes("ebirr") || name.includes("e-birr") || name.includes("e birr") || name.includes("kaafi")) {
+    // Must NOT match telebirr or cbebirr (which also contain "e birr"/"e-birr" substrings)
+    if ((name.includes("kaafi") || /\be[\s-]?birr\b/.test(name)) &&
+        !name.includes("tele") && !name.includes("cbe")) {
         return "kaafiebirr";
     }
     // "mpesa" or "m-pesa"
@@ -271,13 +273,15 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
 
     // BOA and Telebirr transactions can take time to propagate in Verify.ET
     const effectiveMaxRetries =
-        bank === "boa" ? 4 :         // up to 5 attempts for BOA (slow propagation)
-            bank === "telebirr" ? 4 :    // up to 5 attempts for Telebirr
+        bank === "boa" ? 4 :   // up to 5 attempts for BOA
+            bank === "telebirr" ? 7 :   // up to 8 attempts for Telebirr (intermittent propagation)
                 MAX_RETRIES;
 
-    // Per-bank not-found retry delays
-    const boaRetryDelays = [5000, 10000, 20000, 30000]; // 5s, 10s, 20s, 30s
-    const telebirrRetryDelays = [5000, 8000, 12000, 15000]; // 5s, 8s, 12s, 15s
+    // Per-bank not-found retry delays (ms)
+    // BOA:      5s, 10s, 20s, 30s
+    // Telebirr: 5s, 10s, 15s, 20s, 25s, 30s, 30s  (total wait ~135s)
+    const boaRetryDelays = [5000, 10000, 20000, 30000];
+    const telebirrRetryDelays = [5000, 10000, 15000, 20000, 25000, 30000, 30000];
 
     for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
         if (attempt > 0) {
@@ -296,9 +300,9 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
 
         try {
             const res = await axios.post(
-                `${VERIFY_ET_BASE}?waitMs=${bank === "boa" ? 15000 : bank === "telebirr" ? 12000 : 8000}`,
+                `${VERIFY_ET_BASE}?waitMs=${bank === "boa" ? 15000 : bank === "telebirr" ? 20000 : 8000}`,
                 requestBody,
-                { headers: requestHeaders, timeout: 35000 }
+                { headers: requestHeaders, timeout: 40000 }
             );
 
             console.log(`[verify-et] Response — HTTP ${res.status} verified=${res.data?.verified}`);
