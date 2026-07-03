@@ -553,6 +553,31 @@ async function extractTxIdFromImage(imageFileId) {
 
         console.log("🧹 Final TX ID:", txId);
 
+        // OCR post-correction: for Telebirr IDs (all uppercase alphanumeric),
+        // the original raw text is the best reference. Try to find the exact
+        // sequence in fullText that matches our extracted ID with common OCR
+        // confusions corrected (l→I, etc.)
+        if (txId && fullText) {
+            // Look for the exact ID in fullText — if found verbatim, trust OCR
+            // If not found, try to find a close match with I↔1, O↔0 swaps
+            const txIdUpper = txId.toUpperCase();
+            if (!fullText.toUpperCase().includes(txIdUpper)) {
+                // Build a regex that allows I/1 and O/0 interchangeability
+                const flexPattern = txIdUpper.replace(/[I1]/g, '[I1]').replace(/[O0]/g, '[O0]');
+                const flexRegex = new RegExp(flexPattern, 'i');
+                const flexMatch = fullText.match(flexRegex);
+                if (flexMatch) {
+                    const corrected = flexMatch[0].toUpperCase();
+                    if (corrected !== txIdUpper) {
+                        console.log(`🔧 OCR correction: "${txId}" → "${corrected}" (found in source text)`);
+                        txId = corrected;
+                    }
+                }
+            }
+        }
+
+        console.log("✅ Confirmed TX ID:", txId);
+
         return { txId, fullText };
 
     } catch (error) {
@@ -2795,18 +2820,70 @@ bot.on("text", async (ctx) => {
         });
 
         if (verification.verified) {
-            await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1 WHERE id=$2`, [transferId, orderId]);
-            try {
-                await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    `✅ Payment verified!\n\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\nYour order is being processed. You will be notified when complete.`,
-                    { parse_mode: "HTML" });
-            } catch (e) { await ctx.reply(`✅ Payment verified! Order #${orderId} approved.`, { parse_mode: "HTML" }); }
+            await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1, verified_by_shegerpay=true WHERE id=$2`, [transferId, orderId]);
 
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                `✅ AUTO-VERIFIED eBirr ORDER #${orderId}\n👤 User: @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
-                buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName),
-                { reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }]] } }
-            );
+            const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
+
+            if (isInstant && externalProductId) {
+                // Attempt auto-delivery for instant products
+                try {
+                    const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                    if (ragnerResult && ragnerResult.success) {
+                        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                        try {
+                            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                                `✅ Payment verified!\n\n🎮 UC Delivered Successfully!\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}`,
+                                { parse_mode: "HTML" });
+                        } catch (e) { await ctx.reply(`✅ UC Delivered! Order #${orderId} completed.`, { parse_mode: "HTML" }); }
+
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                            `✅ AUTO-COMPLETED eBirr ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                            buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName)
+                        );
+                    } else {
+                        // Auto-delivery failed — approved but needs manual delivery
+                        try {
+                            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                                `✅ Payment verified!\n\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\n⚠️ Auto-delivery failed. Our team will complete your order shortly.`,
+                                { parse_mode: "HTML" });
+                        } catch (e) { }
+
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                            `🟡 eBirr ORDER #${orderId} verified but auto-delivery failed\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                            buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
+                            `\n\n👇 Click Complete after manual delivery.`,
+                            { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
+                        );
+                    }
+                } catch (ragnerError) {
+                    console.error("eBirr Ragner error:", ragnerError.message);
+                    try {
+                        await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                            `✅ Payment verified!\n\n📦 ${product.name}\n🧾 Order #${orderId}\n\nYour order is approved. You will be notified when delivered.`,
+                            { parse_mode: "HTML" });
+                    } catch (e) { }
+
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                        `🟡 eBirr ORDER #${orderId} verified (Ragner error: ${ragnerError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                        buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
+                        `\n\n👇 Click Complete after manual delivery.`,
+                        { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
+                    );
+                }
+            } else {
+                // Manual delivery product
+                try {
+                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                        `✅ Payment verified!\n\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\nYour order is being processed. You will be notified when complete.`,
+                        { parse_mode: "HTML" });
+                } catch (e) { await ctx.reply(`✅ Payment verified! Order #${orderId} approved.`, { parse_mode: "HTML" }); }
+
+                await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                    `✅ AUTO-VERIFIED eBirr ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                    buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName),
+                    { reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }]] } }
+                );
+            }
         } else {
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,

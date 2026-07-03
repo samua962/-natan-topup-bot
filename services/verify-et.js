@@ -224,6 +224,50 @@ async function pollVerification(requestId, opts = {}) {
     return null; // exhausted
 }
 
+/**
+ * Generates OCR-corrected variants of a transaction ID.
+ * Common OCR confusions: I↔1, O↔0, l↔1, S↔5, B↔8, Z↔2
+ * Returns an array of unique alternate IDs to try.
+ */
+function generateOcrVariants(txId) {
+    if (!txId) return [];
+
+    // Map each char to its possible OCR confusions
+    const confusions = {
+        'I': ['1'],
+        '1': ['I'],
+        'O': ['0'],
+        '0': ['O'],
+        'l': ['1', 'I'],
+        'S': ['5'],
+        '5': ['S'],
+        'B': ['8'],
+        '8': ['B'],
+        'Z': ['2'],
+        '2': ['Z'],
+    };
+
+    const variants = new Set();
+
+    // Generate variants by flipping one character at a time
+    for (let i = 0; i < txId.length; i++) {
+        const ch = txId[i];
+        const alts = confusions[ch];
+        if (alts) {
+            for (const alt of alts) {
+                const variant = txId.slice(0, i) + alt + txId.slice(i + 1);
+                if (variant !== txId) variants.add(variant);
+            }
+        }
+    }
+
+    // Also try all-uppercase version (OCR sometimes lowercases)
+    const upper = txId.toUpperCase();
+    if (upper !== txId) variants.add(upper);
+
+    return Array.from(variants);
+}
+
 // ---------------------------------------------------------------------------
 // 1.4  verifyPaymentWithVerifyEt — main verification entry point
 // ---------------------------------------------------------------------------
@@ -382,6 +426,50 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
             // All retries exhausted
             return { verified: false, error: lastError };
         }
+    }
+
+    // All retries exhausted with original ID.
+    // Try OCR-corrected variants (e.g. I↔1, O↔0) before giving up.
+    const variants = generateOcrVariants(transactionId);
+    if (variants.length > 0) {
+        console.log(`[verify-et] Trying ${variants.length} OCR-corrected variant(s) for ${transactionId}:`, variants);
+        for (const variant of variants) {
+            try {
+                const variantBody = buildVerifyEtPayload(bank, variant, {
+                    settlementAccount: options.settlementAccount,
+                    phone: options.phone,
+                    senderAccount: options.senderAccount,
+                });
+                console.log(`[verify-et] OCR variant attempt: ${variant}`);
+                const variantHeaders = {
+                    ...requestHeaders,
+                    "Idempotency-Key": `${bank}-${variant}`,
+                };
+                const res = await axios.post(
+                    `${VERIFY_ET_BASE}?waitMs=${bank === "boa" ? 15000 : bank === "telebirr" ? 20000 : 8000}`,
+                    variantBody,
+                    { headers: variantHeaders, timeout: 40000 }
+                );
+                if (res.status === 200) {
+                    const body = res.data || {};
+                    const topStatus = (body.verification?.status || body.data?.[0]?.status || "").toLowerCase();
+                    const isNotFound = topStatus === "not_found" ||
+                        (body.message || "").toLowerCase().includes("not found");
+                    if (!isNotFound) {
+                        console.log(`[verify-et] OCR variant ${variant} succeeded!`);
+                        // Return result with the corrected ID noted
+                        const result = await handleSyncResponse(res.data, expectedAmount);
+                        if (result.verified) {
+                            result.correctedTxId = variant;
+                        }
+                        return result;
+                    }
+                }
+            } catch (e) {
+                console.error(`[verify-et] OCR variant ${variant} error:`, e.message);
+            }
+        }
+        console.log(`[verify-et] All OCR variants exhausted — giving up`);
     }
 
     // Should never reach here
