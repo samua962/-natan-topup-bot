@@ -3421,6 +3421,13 @@ bot.on("photo", async (ctx) => {
         return ctx.reply("⚠️ Please start a new order with /start", { parse_mode: "HTML" });
     }
 
+    // Guard: ignore duplicate photo while verification already in progress
+    if (state.verifying) {
+        console.log("⏳ Already processing payment for user", userId, "— ignoring duplicate photo");
+        return ctx.reply("⏳ Already verifying your previous payment, please wait...", { parse_mode: "HTML" });
+    }
+    userState[userId].verifying = true;
+
     try {
         const fileId = ctx.message.photo.pop().file_id;
 
@@ -3979,6 +3986,11 @@ bot.on("photo", async (ctx) => {
     } catch (error) {
         console.error("❌ Payment screenshot error:", error);
         await ctx.reply("❌ Error processing payment. Please try again or contact support.", { parse_mode: "HTML" });
+    } finally {
+        // Always release the processing lock so user can retry if needed
+        if (userState[userId]) {
+            delete userState[userId].verifying;
+        }
     }
 });
 

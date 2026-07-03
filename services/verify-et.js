@@ -273,15 +273,15 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
 
     // BOA and Telebirr transactions can take time to propagate in Verify.ET
     const effectiveMaxRetries =
-        bank === "boa" ? 4 :   // up to 5 attempts for BOA
-            bank === "telebirr" ? 7 :   // up to 8 attempts for Telebirr (intermittent propagation)
+        bank === "boa" ? 4 :        // up to 5 attempts for BOA
+            bank === "telebirr" ? 3 :   // up to 4 attempts for Telebirr (~43s total, then manual review)
                 MAX_RETRIES;
 
     // Per-bank not-found retry delays (ms)
     // BOA:      5s, 10s, 20s, 30s
-    // Telebirr: 5s, 10s, 15s, 20s, 25s, 30s, 30s  (total wait ~135s)
+    // Telebirr: 8s, 15s, 20s  (total ~43s max, then fast manual review)
     const boaRetryDelays = [5000, 10000, 20000, 30000];
-    const telebirrRetryDelays = [5000, 10000, 15000, 20000, 25000, 30000, 30000];
+    const telebirrRetryDelays = [8000, 15000, 20000];
 
     for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
         if (attempt > 0) {
