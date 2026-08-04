@@ -60,30 +60,29 @@ function extractSmsPaymentReference(providerCode, rawText) {
 
     const bank = resolveSmsBank(providerCode);
 
-    // Web-equivalent Telebirr path: transaction number from SMS text.
+    // Always detect Telebirr SMS first regardless of selected method.
+    // Telebirr SMSes say "Your transaction number is XXXX" or link to ethiotelecom.et.
+    const telebirrTxMatch = smsText.match(/transaction\s*number\s*is\s*([A-Za-z0-9]{6,20})/i)
+        || smsText.match(/Transaction\s*No\s*[:\s]\s*([A-Za-z0-9]{6,20})/i);
+    if (telebirrTxMatch?.[1]) {
+        return { bank: "telebirr", reference: String(telebirrTxMatch[1]).trim(), mode: "transaction_id" };
+    }
+    // Extract transaction ID from Telebirr receipt URL path (strip trailing punctuation)
+    const ethioUrlMatch = smsText.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
+    if (ethioUrlMatch?.[1]) {
+        return { bank: "telebirr", reference: String(ethioUrlMatch[1]).trim(), mode: "transaction_id" };
+    }
+
+    // If the selected method IS telebirr but no pattern matched, fail with clear mode
     if (bank === "telebirr") {
-        const telebirrMatch = smsText.match(/transaction\s*number\s*is\s*([A-Za-z0-9]{6,20})/i);
-        if (telebirrMatch?.[1]) {
-            return { bank, reference: String(telebirrMatch[1]).trim(), mode: "transaction_id" };
-        }
-        const telebirrNoMatch = smsText.match(/Transaction\s*No\s*[:\s]\s*([A-Za-z0-9]{6,20})/i);
-        if (telebirrNoMatch?.[1]) {
-            return { bank, reference: String(telebirrNoMatch[1]).trim(), mode: "transaction_id" };
-        }
-        const urlPathMatch = smsText.match(/https?:\/\/[^\s,;]*\/([^\/\s,;]+)/i);
-        if (urlPathMatch?.[1]) {
-            const candidate = String(urlPathMatch[1]).trim();
-            if (candidate.length >= 6 && candidate.length <= 20 && /[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
-                return { bank, reference: candidate, mode: "transaction_id" };
-            }
-        }
         return { bank, reference: null, mode: "transaction_id" };
     }
 
-    // Requested behavior: non-Telebirr uses receipt URL from SMS.
+    // Non-Telebirr: receipt URL from SMS. Strip trailing punctuation (periods, commas, etc.)
     const urlMatch = smsText.match(/https?:\/\/[^\s,;]+/i);
     if (urlMatch?.[0]) {
-        return { bank, reference: String(urlMatch[0]).trim(), mode: "receipt_url" };
+        const cleanUrl = urlMatch[0].replace(/[.,;:!?]+$/, "").trim();
+        return { bank, reference: cleanUrl, mode: "receipt_url" };
     }
 
     return { bank, reference: null, mode: "receipt_url" };
@@ -2147,7 +2146,7 @@ bot.on("callback_query", async (ctx) => {
             return;
         }
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => m.id === methodId);
+        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
@@ -2431,7 +2430,7 @@ bot.on("callback_query", async (ctx) => {
         const price = parseFloat(parts[4]);
         const name = parts.slice(5).join(" ");
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => m.id === methodId);
+        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
@@ -2459,7 +2458,7 @@ bot.on("callback_query", async (ctx) => {
         const price = parseFloat(parts[3]);
         const name = parts.slice(4).join(" ");
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => m.id === methodId);
+        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
