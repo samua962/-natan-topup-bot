@@ -833,6 +833,20 @@ async function getPaymentMethods() {
     }
 }
 
+function resolvePaymentMethod(methods, token) {
+    const key = String(token || "").trim();
+    if (!key || !Array.isArray(methods)) return null;
+
+    // New format: i{index}, e.g. i0, i1
+    if (/^i\d+$/i.test(key)) {
+        const idx = parseInt(key.slice(1), 10);
+        return Number.isInteger(idx) && idx >= 0 && idx < methods.length ? methods[idx] : null;
+    }
+
+    // Legacy format: method id in callback payload
+    return methods.find((m) => String(m.id ?? m.method_id ?? "") === key) || null;
+}
+
 // =====================
 // 🟢 SAFE EDIT MESSAGE
 // =====================
@@ -1162,7 +1176,7 @@ async function showDepositPaymentMethods(ctx, amount) {
     const userId = ctx.from.id;
     if (!userState[userId]) userState[userId] = {};
     userState[userId].depositAmount = amount;
-    const buttons = methods.map((m) => [{ text: m.name, callback_data: `deposit_paymethod_${m.id}_${amount}` }]);
+    const buttons = methods.map((m, idx) => [{ text: m.name, callback_data: `deposit_paymethod_i${idx}_${amount}` }]);
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
     buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
     await safeEdit(ctx, `💰 Deposit ${amount} ETB\n\nSelect payment method:`, buttons);
@@ -1318,11 +1332,11 @@ async function showPaymentOptions(ctx, productInfo) {
 
     // Add all bank transfer methods
     if (methods.length > 0) {
-        methods.forEach((m) => {
+        methods.forEach((m, idx) => {
             buttons.push([
                 {
                     text: m.name,
-                    callback_data: `unified_payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
+                    callback_data: `unified_payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
                 }
             ]);
         });
@@ -1352,8 +1366,8 @@ async function showBankTransferMethods(ctx, productInfo) {
     if (!userState[userId]) userState[userId] = {};
     userState[userId].productInfo = productInfo;
 
-    const buttons = methods.map((m) => [
-        { text: m.name, callback_data: `payment_${m.id}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
+    const buttons = methods.map((m, idx) => [
+        { text: m.name, callback_data: `payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
     ]);
     buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
@@ -2139,14 +2153,14 @@ bot.on("callback_query", async (ctx) => {
         delete userState[userId].orderId;
         delete userState[userId].productInfo;
         const parts = data.split("_");
-        const methodId = parseInt(parts[2]);
+        const methodToken = parts[2];
         const amount = parseInt(parts[3]);
         if (isNaN(amount)) {
             await safeEdit(ctx, "❌ Invalid amount. Please start deposit again.", [[{ text: "💰 Deposit", callback_data: "wallet_deposit" }]]);
             return;
         }
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
+        const selectedMethod = resolvePaymentMethod(methods, methodToken);
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
@@ -2425,12 +2439,12 @@ bot.on("callback_query", async (ctx) => {
     // ----- UNIFIED PAYMENT OPTION: BANK METHOD -----
     if (data.startsWith("unified_payment_")) {
         const parts = data.split("_");
-        const methodId = parseInt(parts[2]);
+        const methodToken = parts[2];
         const productId = parts[3];
         const price = parseFloat(parts[4]);
         const name = parts.slice(5).join(" ");
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
+        const selectedMethod = resolvePaymentMethod(methods, methodToken);
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
@@ -2453,12 +2467,12 @@ bot.on("callback_query", async (ctx) => {
     // ----- PAYMENT METHOD SELECTION (Bank Transfer) -----
     if (data.startsWith("payment_")) {
         const parts = data.split("_");
-        const methodId = parseInt(parts[1]);
+        const methodToken = parts[1];
         const productId = parts[2];
         const price = parseFloat(parts[3]);
         const name = parts.slice(4).join(" ");
         const methods = await getPaymentMethods();
-        const selectedMethod = methods.find((m) => String(m.id) === String(methodId)) || methods[methodId];
+        const selectedMethod = resolvePaymentMethod(methods, methodToken);
         if (!selectedMethod) {
             await safeEdit(ctx, "❌ Payment method not found.", []);
             return;
