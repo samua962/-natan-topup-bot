@@ -2809,6 +2809,12 @@ bot.on("text", async (ctx) => {
 
     // Handle SMS text for order payment verification
     if (state?.step === "PAYMENT_SMS_WAITING") {
+        // Per-user lock — blocks concurrent SMS resubmissions
+        if (state.verifying) {
+            return ctx.reply("⏳ Already verifying your previous payment, please wait...", { parse_mode: "HTML" });
+        }
+        userState[userId].verifying = true;
+
         const smsText = text.trim();
         const product = state.productInfo;
         const method = state.paymentMethod;
@@ -2823,10 +2829,25 @@ bot.on("text", async (ctx) => {
         const transferId = proof.reference;
 
         if (!transferId) {
+            userState[userId].verifying = false;
             const msg = proof.mode === "transaction_id"
                 ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
+        }
+
+        // Pre-flight duplicate check before creating any order record
+        const priorOrderTx = await db.query(
+            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('PENDING','APPROVED','COMPLETED') LIMIT 1",
+            [transferId]
+        );
+        const priorDepositTx = await db.query(
+            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status IN ('APPROVED','PENDING') LIMIT 1",
+            [transferId]
+        );
+        if (priorOrderTx.rows.length > 0 || priorDepositTx.rows.length > 0) {
+            delete userState[userId];
+            return ctx.reply("⚠️ This transaction ID has already been used for a previous payment.\n\nPlease make a new payment and send the new SMS.", { parse_mode: "HTML" });
         }
 
         const verifyingMsg = await ctx.reply(`🔍 Found transaction ID: <code>${transferId}</code>\n⏳ Verifying payment...`, { parse_mode: "HTML" });
@@ -2859,6 +2880,19 @@ bot.on("text", async (ctx) => {
         });
 
         if (verification.verified) {
+            // Post-verification race-window duplicate check
+            const raceCheck = await db.query(
+                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED','COMPLETED') AND id != $2 LIMIT 1",
+                [transferId, orderId]
+            );
+            if (raceCheck.rows.length > 0) {
+                await db.query("UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1", [orderId]);
+                delete userState[userId];
+                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                    "⚠️ This transaction ID has already been used for another order.\n\nPlease make a new payment.", { parse_mode: "HTML" }); } catch (e) { }
+                return;
+            }
+
             await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1, verified_by_shegerpay=true WHERE id=$2`, [transferId, orderId]);
 
             const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
@@ -2945,6 +2979,12 @@ bot.on("text", async (ctx) => {
 
     // Handle SMS text for DEPOSIT verification
     if (state?.step === "DEPOSIT_SMS_WAITING") {
+        // Per-user lock — blocks concurrent SMS resubmissions
+        if (state.verifying) {
+            return ctx.reply("⏳ Already verifying your previous payment, please wait...", { parse_mode: "HTML" });
+        }
+        userState[userId].verifying = true;
+
         const smsText = text.trim();
         const method = state.depositMethod;
         const depositAmount = state.depositAmount;
@@ -2959,13 +2999,28 @@ bot.on("text", async (ctx) => {
         const transferId = proof.reference;
 
         if (!transferId) {
+            userState[userId].verifying = false;
             const msg = proof.mode === "transaction_id"
                 ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
         }
 
-        const verifyingMsg = await ctx.reply(`🔍 Found Transfer-Id: <code>${transferId}</code>\n⏳ Verifying...`, { parse_mode: "HTML" });
+        // Pre-flight duplicate check before inserting any deposit record
+        const priorOrderTxDep = await db.query(
+            "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('PENDING','APPROVED','COMPLETED') LIMIT 1",
+            [transferId]
+        );
+        const priorDepositTxDep = await db.query(
+            "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status IN ('APPROVED','PENDING') LIMIT 1",
+            [transferId]
+        );
+        if (priorOrderTxDep.rows.length > 0 || priorDepositTxDep.rows.length > 0) {
+            delete userState[userId];
+            return ctx.reply("⚠️ This transaction ID has already been used for a previous payment.\n\nPlease make a new payment and send the new SMS.", { parse_mode: "HTML" });
+        }
+
+        const verifyingMsg = await ctx.reply(`🔍 Found transaction ID: <code>${transferId}</code>\n⏳ Verifying...`, { parse_mode: "HTML" });
 
         const verification = await verifyPayment(method.name, transferId, parseFloat(depositAmount), {
             settlementAccount: method.account_number || null,
@@ -2975,12 +3030,19 @@ bot.on("text", async (ctx) => {
         });
 
         if (verification.verified) {
-            // Duplicate check
-            const existingDeposit = await db.query("SELECT id FROM deposit_requests WHERE transaction_id=$1 AND status='APPROVED'", [transferId]);
-            const existingOrder = await db.query("SELECT id FROM orders WHERE transaction_id=$1 AND status IN ('APPROVED','COMPLETED')", [transferId]);
-            if (existingDeposit.rows.length > 0 || existingOrder.rows.length > 0) {
-                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, "⚠️ This transaction has already been used.", { parse_mode: "HTML" }); } catch (e) { }
+            // Post-verification race-window duplicate check
+            const raceCheckDep = await db.query(
+                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED' LIMIT 1",
+                [transferId]
+            );
+            const raceCheckOrdDep = await db.query(
+                "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED','COMPLETED') LIMIT 1",
+                [transferId]
+            );
+            if (raceCheckDep.rows.length > 0 || raceCheckOrdDep.rows.length > 0) {
                 delete userState[userId];
+                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                    "⚠️ This transaction ID has already been used for a previous payment.", { parse_mode: "HTML" }); } catch (e) { }
                 return;
             }
 
