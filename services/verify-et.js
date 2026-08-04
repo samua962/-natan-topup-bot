@@ -12,6 +12,7 @@
  */
 
 const axios = require("axios");
+const crypto = require("crypto");
 
 const VERIFY_ET_BASE = "https://verify.et/api/verify";
 
@@ -89,8 +90,22 @@ function resolveVerifyEtBank(methodName) {
  * @param {string} [extra.phone]              - Sender phone (cbebirr)
  * @returns {Object}
  */
+function accountSuffixDigits(account, length) {
+    if (account == null || account === "") return undefined;
+    const digits = String(account).replace(/\D/g, "");
+    if (!digits) return undefined;
+    return digits.length >= length ? digits.slice(-length) : digits;
+}
+
+function normalizedAccountNumber(account) {
+    if (account == null || account === "") return undefined;
+    const digits = String(account).replace(/\D/g, "");
+    return digits || undefined;
+}
+
 function buildVerifyEtPayload(bank, transactionId, extra = {}) {
     const { settlementAccount, phone, senderAccount } = extra;
+    const settlementDigits = normalizedAccountNumber(settlementAccount);
 
     let body;
 
@@ -99,10 +114,9 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
             body = {
                 bank: "cbe",
                 referenceNumber: transactionId,
-                // Last 8 digits of the settlement account
-                accountSuffix: settlementAccount
-                    ? String(settlementAccount).replace(/\D/g, "").slice(-8)
-                    : undefined,
+                // Last 8 digits of the receiver/settlement account
+                accountSuffix: accountSuffixDigits(settlementAccount, 8),
+                ...(settlementDigits ? { settlementAccount: settlementDigits } : {}),
             };
             break;
 
@@ -110,12 +124,11 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
             body = {
                 bank: "boa",
                 referenceNumber: transactionId,
-                // Last 5 digits of the receiver/settlement account (required by Verify.ET)
-                accountSuffix: settlementAccount
-                    ? String(settlementAccount).replace(/\D/g, "").slice(-5)
-                    : undefined,
+                // BOA lookup uses the sender account suffix (ShegerPay used full sender_account for the same lookup)
+                accountSuffix: accountSuffixDigits(senderAccount, 5)
+                    ?? accountSuffixDigits(settlementAccount, 5),
+                ...(settlementDigits ? { settlementAccount: settlementDigits } : {}),
             };
-            // Note: senderAccount is NOT a Verify.ET documented field for BOA — omit it
             break;
 
         case "telebirr":
@@ -150,6 +163,26 @@ function buildVerifyEtPayload(bank, transactionId, extra = {}) {
     Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
 
     return body;
+}
+
+function stableStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value).sort();
+        return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function buildIdempotencyKey(bank, transactionId, requestBody) {
+    const payloadHash = crypto
+        .createHash("sha256")
+        .update(stableStringify(requestBody))
+        .digest("hex")
+        .slice(0, 12);
+    return `${bank}-${transactionId}-${payloadHash}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,20 +329,20 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
         return { verified: false, error: "Payment provider could not be determined" };
     }
 
-    // Deterministic idempotency key (same for all retries of this call)
-    const idempotencyKey = `${bank}-${transactionId}`;
-
-    const requestHeaders = {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "Idempotency-Key": idempotencyKey,
-    };
-
     const requestBody = buildVerifyEtPayload(bank, transactionId, {
         settlementAccount: options.settlementAccount,
         phone: options.phone,
         senderAccount: options.senderAccount,
     });
+
+    // Deterministic idempotency key for this exact payload.
+    // This prevents key collisions when the same txId is submitted with different payload fields.
+    const baseIdempotencyKey = buildIdempotencyKey(bank, transactionId, requestBody);
+    let activeIdempotencyKey = baseIdempotencyKey;
+    const commonHeaders = {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+    };
 
     const MAX_RETRIES = 2; // default: up to 3 total attempts
 
@@ -341,6 +374,12 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
             `[verify-et] Calling Verify.ET — bank=${bank} txId=${transactionId} expectedAmount=${expectedAmount} attempt=${attempt + 1}`
         );
         console.log(`[verify-et] Request body:`, JSON.stringify(requestBody));
+        console.log(`[verify-et] Idempotency-Key: ${activeIdempotencyKey}`);
+
+        const requestHeaders = {
+            ...commonHeaders,
+            "Idempotency-Key": activeIdempotencyKey,
+        };
 
         try {
             const res = await axios.post(
@@ -398,11 +437,28 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
             // ── Check retryability ───────────────────────────────────────────────
             const httpStatus = err.response?.status;
 
+            const apiMessage = String(
+                err.response?.data?.message ||
+                err.response?.data?.error ||
+                errMsg
+            );
+            const idempotencyConflict =
+                httpStatus === 409 &&
+                /idempotency-key/i.test(apiMessage);
+
+            if (idempotencyConflict && attempt < effectiveMaxRetries) {
+                activeIdempotencyKey = `${baseIdempotencyKey}-r${attempt + 1}`;
+                console.warn(
+                    `[verify-et] Idempotency conflict detected, retrying with key ${activeIdempotencyKey}`
+                );
+                continue;
+            }
+
             // 4xx except 429 → fail immediately, no retry
             if (httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429) {
                 const apiError =
-                    err.response.data?.message ||
-                    err.response.data?.error ||
+                    err.response?.data?.message ||
+                    err.response?.data?.error ||
                     errMsg;
                 return { verified: false, error: apiError };
             }
@@ -442,8 +498,8 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
                 });
                 console.log(`[verify-et] OCR variant attempt: ${variant}`);
                 const variantHeaders = {
-                    ...requestHeaders,
-                    "Idempotency-Key": `${bank}-${variant}`,
+                    ...commonHeaders,
+                    "Idempotency-Key": buildIdempotencyKey(bank, variant, variantBody),
                 };
                 const res = await axios.post(
                     `${VERIFY_ET_BASE}?waitMs=${bank === "boa" ? 15000 : bank === "telebirr" ? 20000 : 8000}`,
@@ -539,10 +595,6 @@ async function handleSyncResponse(envelope, expectedAmount) {
     const duplicateResult = checkDuplicate(data);
     if (duplicateResult) return duplicateResult;
 
-    // Settlement account match (Req 7)
-    const settlementResult = checkSettlementAccountMatch(data);
-    if (settlementResult) return settlementResult;
-
     // Amount validation — only when amount is present in the response
     if (hasAmount) {
         const amountResult = validateAmount(amount, expectedAmount);
@@ -550,6 +602,10 @@ async function handleSyncResponse(envelope, expectedAmount) {
     } else {
         console.log(`[verify-et] Amount not present in response — skipping amount validation`);
     }
+
+    // Settlement account match (Req 7)
+    const settlementResult = checkSettlementAccountMatch(data);
+    if (settlementResult) return settlementResult;
 
     // Timestamp validation (Req 4.6) — only when timestamp present
     if (data.timestamp) {
@@ -639,9 +695,24 @@ function checkSettlementAccountMatch(data) {
         // If the reason is that the transaction itself wasn't found,
         // don't show a misleading "wrong account" error.
         const reason = (sam.reason || "").toLowerCase();
-        if (reason === "verification_not_successful" || reason === "not_found") {
+        if (
+            reason === "verification_not_successful" ||
+            reason === "not_found" ||
+            reason === "unknown" ||
+            reason === "unavailable" ||
+            reason === "inconclusive" ||
+            reason === "settlement_account_missing"
+        ) {
+            console.log(`[verify-et] settlementAccountMatch inconclusive; skipping mismatch reject. reason=${reason}`);
             return null; // let the upstream not_found handling report the real error
         }
+
+        // Only hard-fail when Verify.ET explicitly says it's an account mismatch.
+        if (reason && !reason.includes("mismatch") && !reason.includes("wrong")) {
+            console.log(`[verify-et] settlementAccountMatch non-mismatch reason; skipping reject. reason=${reason}`);
+            return null;
+        }
+
         return {
             verified: false,
             error:

@@ -28,20 +28,65 @@ function parseUserInputs(input) {
 }
 
 function getTxIdHint(methodName) {
-    const name = methodName?.toString().trim().toLowerCase() || "";
-    if (name.includes("telebirr")) {
-        return "📱 After payment, Telebirr will send you an SMS. Copy the transaction ID (e.g., FT26062K7WMY) from that message.";
-    } else if (name.includes("cbe")) {
-        return "🏦 After payment, CBE Birr will show a transaction reference. Copy the FT number from the receipt or SMS.";
-    } else if (name.includes("birhan")) {
-        return "🏦 After payment, Birhan Bank will show a transaction reference. Copy the FT number from the receipt or SMS.";
-    } else if (name.includes("abyssinia") || name.includes("boa")) {
-        return "🏦 After payment, Bank of Abyssinia will give you a receipt with transaction ID. Copy the FT reference.";
-    } else if (name.includes("ebirr")) {
-        return "📱 After payment, eBirr will show a transaction ID. Copy it from the app or SMS.";
-    } else {
-        return "📝 After payment, copy the transaction ID / reference number from your bank app or SMS.";
+    const bank = resolveSmsBank(methodName);
+    if (bank === "telebirr") {
+        return "📱 Telebirr: paste the SMS containing your transaction number (e.g. DGR9AO5VVX).";
     }
+    return "🔗 Paste the SMS that contains your receipt URL (http/https link).";
+}
+
+function resolveSmsBank(providerCode) {
+    if (!providerCode) return null;
+    const name = String(providerCode).trim().toLowerCase();
+    if (!name) return null;
+
+    if (name.includes("tele-birr") || name.includes("tele birr") || name.includes("telebirr")) return "telebirr";
+    if (name.includes("cbebirr") || name.includes("cbe birr")) return "cbebirr";
+    if (name.includes("cbe")) return "cbe";
+    if (name.includes("awash")) return "awash";
+    if (name.includes("dashen")) return "dashen";
+    if (name.includes("birhan")) return "birhan";
+    if (name.includes("abyssinia") || name.includes("boa")) return "boa";
+    if (name.includes("kaafi")) return "kaafiebirr";
+    if ((name.includes("ebirr") || /\be[\s-]?birr\b/.test(name)) && !name.includes("tele") && !name.includes("cbe")) return "ebirr";
+    if (name.includes("mpesa") || name.includes("m-pesa")) return "mpesa";
+    if (name.includes("siinqee")) return "siinqee";
+    return null;
+}
+
+function extractSmsPaymentReference(providerCode, rawText) {
+    const smsText = String(rawText || "").trim();
+    if (!smsText) return { bank: resolveSmsBank(providerCode), reference: null, mode: null };
+
+    const bank = resolveSmsBank(providerCode);
+
+    // Web-equivalent Telebirr path: transaction number from SMS text.
+    if (bank === "telebirr") {
+        const telebirrMatch = smsText.match(/transaction\s*number\s*is\s*([A-Za-z0-9]{6,20})/i);
+        if (telebirrMatch?.[1]) {
+            return { bank, reference: String(telebirrMatch[1]).trim(), mode: "transaction_id" };
+        }
+        const telebirrNoMatch = smsText.match(/Transaction\s*No\s*[:\s]\s*([A-Za-z0-9]{6,20})/i);
+        if (telebirrNoMatch?.[1]) {
+            return { bank, reference: String(telebirrNoMatch[1]).trim(), mode: "transaction_id" };
+        }
+        const urlPathMatch = smsText.match(/https?:\/\/[^\s,;]*\/([^\/\s,;]+)/i);
+        if (urlPathMatch?.[1]) {
+            const candidate = String(urlPathMatch[1]).trim();
+            if (candidate.length >= 6 && candidate.length <= 20 && /[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
+                return { bank, reference: candidate, mode: "transaction_id" };
+            }
+        }
+        return { bank, reference: null, mode: "transaction_id" };
+    }
+
+    // Requested behavior: non-Telebirr uses receipt URL from SMS.
+    const urlMatch = smsText.match(/https?:\/\/[^\s,;]+/i);
+    if (urlMatch?.[0]) {
+        return { bank, reference: String(urlMatch[0]).trim(), mode: "receipt_url" };
+    }
+
+    return { bank, reference: null, mode: "receipt_url" };
 }
 
 function resolveShegerPayProvider(methodName) {
@@ -1328,20 +1373,14 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
     userState[userId].paymentMethod = paymentMethod;
     userState[userId].productInfo = productInfo;
 
-    // eBirr: ask for SMS text instead of screenshot — Verify.ET needs the Transfer-Id or receipt URL
-    // Strict match: must be eBirr/Kaafi specifically, NOT telebirr or cbebirr
-    const methodNameLower = (paymentMethod.name || "").toLowerCase();
-    const isEbirr = (methodNameLower.includes("kaafi") ||
-        /\be[\s-]?birr\b/.test(methodNameLower)) &&
-        !methodNameLower.includes("tele") &&
-        !methodNameLower.includes("cbe");
+    const provider = resolveShegerPayProvider(paymentMethod.name) || "telebirr";
 
-    if (isEbirr) {
-        userState[userId].step = "EBIRR_SMS_WAITING";
+    if (provider === "boa") {
+        userState[userId].step = "AWAITING_BOA_SMS_SUFFIX";
         const msg = `📦 Product: ${productInfo.name}
 💰 Amount: ${productInfo.price} ETB
 
-📱 ${paymentMethod.name}
+🏦 ${paymentMethod.name}
 📞 Account: ${paymentMethod.account_number}
 👤 Name: ${paymentMethod.account_name || "N/A"}
 
@@ -1349,12 +1388,10 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
 🔹 INSTRUCTIONS:
 1️⃣ Copy account & verify name.
 2️⃣ Send EXACTLY ${productInfo.price} ETB.
-3️⃣ After payment, <b>copy and paste the SMS</b> you receive from eBirr here.
+3️⃣ Send the <b>last 5 digits</b> of your sender account number.
 
-📌 Example SMS:
-<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB880 to amanuel hailu Batru(974771443) at 01/07/26 13:37:39, Your Balance is ETB19.67.</code>
+📌 Example: <code>12345</code>
 
-⏳ Order expires in 30 minutes.
 Type /cancel to cancel.`;
         await ctx.reply(msg, { parse_mode: "HTML" });
         return;
@@ -1377,14 +1414,16 @@ By paying, you confirm you are 18+ and agree to our Terms.
 🔹 INSTRUCTIONS:
 1️⃣ Copy account & verify name.
 2️⃣ Send EXACTLY ${productInfo.price} ETB only.
-3️⃣ After payment, send the payment screenshot here.
-4️⃣ We will verify automatically.
+3️⃣ After payment, <b>copy and paste your payment SMS</b> here.
+4️⃣ We verify automatically using transaction reference.
+
+${getTxIdHint(paymentMethod.name)}
 
 ⏳ Order expires in 30 minutes.
 Type /cancel to cancel.
     `;
 
-    userState[userId].step = "PAY";
+    userState[userId].step = "PAYMENT_SMS_WAITING";
 
     if (paymentMethod.image_url && paymentMethod.image_url.trim() !== "") {
         await ctx.replyWithPhoto(paymentMethod.image_url, { caption: shortCaption, parse_mode: "HTML" });
@@ -1768,7 +1807,7 @@ bot.command("info", async (ctx) => {
 });
 bot.command("help", async (ctx) => {
     const emojiText = "❓ HELP & GUIDE";
-    const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+    const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Paste payment SMS\n\nNeed help? Use /support`;
     const buttons = [
         [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
         [{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
@@ -2116,23 +2155,16 @@ bot.on("callback_query", async (ctx) => {
         userState[userId].depositMethod = selectedMethod;
         userState[userId].depositAmount = amount;
 
-        // eBirr: ask for SMS text instead of screenshot
-        // Strict match: must be eBirr/Kaafi specifically, NOT telebirr or cbebirr
-        const methodNameLower = (selectedMethod.name || "").toLowerCase();
-        const isEbirr = (methodNameLower.includes("kaafi") ||
-            /\be[\s-]?birr\b/.test(methodNameLower)) &&
-            !methodNameLower.includes("tele") &&
-            !methodNameLower.includes("cbe");
-
-        if (isEbirr) {
-            userState[userId].step = "EBIRR_DEPOSIT_SMS_WAITING";
-            const msg = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n📱 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n━━━━━━━━━━━━━━━━━━━━\n🔹 INSTRUCTIONS:\n1️⃣ Send payment via eBirr.\n2️⃣ <b>Copy and paste the SMS</b> you receive here.\n\n📌 Example SMS:\n<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB500 to amanuel hailu Batru(974771443) at 01/07/26 13:37:39, Your Balance is ETB19.67.</code>\n\nType /cancel to cancel`;
-            await ctx.reply(msg, { parse_mode: "HTML" });
+        const provider = resolveShegerPayProvider(selectedMethod.name) || "telebirr";
+        if (provider === "boa") {
+            userState[userId].step = "AWAITING_BOA_DEPOSIT_SMS_SUFFIX";
+            const boaMsg = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n━━━━━━━━━━━━━━━━━━━━\n🔹 INSTRUCTIONS:\n1️⃣ Send EXACTLY ${amount} ETB.\n2️⃣ Send the <b>last 5 digits</b> of your sender account number.\n\n📌 Example: <code>12345</code>\n\nType /cancel to cancel`;
+            await ctx.reply(boaMsg, { parse_mode: "HTML" });
             return;
         }
 
-        userState[userId].step = "DEPOSIT_PAYMENT_WAITING";
-        const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "Send payment screenshot here after transfer"}\n\n⚠️ Send the screenshot in this chat\nType /cancel to cancel`;
+        userState[userId].step = "DEPOSIT_SMS_WAITING";
+        const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "After transfer, paste your payment SMS in this chat."}\n\n🔹 Send your payment SMS text in this chat.\n${getTxIdHint(selectedMethod.name)}\n\nType /cancel to cancel`;
         await ctx.reply(details, { parse_mode: "HTML" });
         return;
     }
@@ -2214,7 +2246,7 @@ bot.on("callback_query", async (ctx) => {
     }
     if (data === "help_menu") {
         const emojiText = "❓ HELP & GUIDE";
-        const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Send screenshot\n\nNeed help? Use /support`;
+        const message = `${emojiText}\n\nCommands:\n/start - Main menu\n/myorders - View orders\n/support - Contact support\n/channel - Join channel\n/info - About bot\n/help - This message\n/cancel - Cancel current order\n\nHow to Order:\n1. Select category\n2. Choose product\n3. Enter ID/credentials\n4. Confirm\n5. Select payment\n6. Paste payment SMS\n\nNeed help? Use /support`;
 
         const buttons = [
             [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }],
@@ -2450,7 +2482,7 @@ bot.on("callback_query", async (ctx) => {
     // ----- CONFIRM YES -----
     if (data === "confirm_yes") {
         if (state.product) {
-            state.step = "PAY";
+            state.step = "PAYMENT_METHOD_SELECTION";
             const productInfo = {
                 productId: state.product.productId,
                 price: state.product.price,
@@ -2749,8 +2781,34 @@ bot.on("text", async (ctx) => {
         }
     }
 
-    // Handle eBirr SMS text for order payment verification
-    if (state?.step === "EBIRR_SMS_WAITING") {
+    if (state?.step === "AWAITING_BOA_SMS_SUFFIX") {
+        const suffix = text.trim().replace(/\D/g, "");
+        if (!/^\d{5}$/.test(suffix)) {
+            return ctx.reply("❌ Please send exactly the last 5 digits of your BOA sender account.\n\nExample: <code>12345</code>", { parse_mode: "HTML" });
+        }
+        userState[userId].senderAccountSuffix = suffix;
+        userState[userId].step = "PAYMENT_SMS_WAITING";
+        return ctx.reply(
+            `✅ Sender account suffix saved: <code>${suffix}</code>\n\nNow paste your payment SMS here.\n${getTxIdHint(userState[userId]?.paymentMethod?.name)}`,
+            { parse_mode: "HTML" }
+        );
+    }
+
+    if (state?.step === "AWAITING_BOA_DEPOSIT_SMS_SUFFIX") {
+        const suffix = text.trim().replace(/\D/g, "");
+        if (!/^\d{5}$/.test(suffix)) {
+            return ctx.reply("❌ Please send exactly the last 5 digits of your BOA sender account.\n\nExample: <code>12345</code>", { parse_mode: "HTML" });
+        }
+        userState[userId].senderAccountSuffix = suffix;
+        userState[userId].step = "DEPOSIT_SMS_WAITING";
+        return ctx.reply(
+            `✅ Sender account suffix saved: <code>${suffix}</code>\n\nNow paste your payment SMS here.\n${getTxIdHint(userState[userId]?.depositMethod?.name)}`,
+            { parse_mode: "HTML" }
+        );
+    }
+
+    // Handle SMS text for order payment verification
+    if (state?.step === "PAYMENT_SMS_WAITING") {
         const smsText = text.trim();
         const product = state.productInfo;
         const method = state.paymentMethod;
@@ -2760,40 +2818,18 @@ bot.on("text", async (ctx) => {
             return ctx.reply("⚠️ Session expired. Please start your order again.", { parse_mode: "HTML" });
         }
 
-        // Extract Transfer-Id from SMS text
-        // Format: "Transfer-Id: 802103540706," or "Transfer-Id: 802103540706 "
-        let transferId = null;
-
-        // Try Transfer-Id pattern first (eBirr KAAFI SMS format)
-        const transferIdMatch = smsText.match(/Transfer[-\s]*Id[:\s]+([0-9]{6,20})/i);
-        if (transferIdMatch) {
-            transferId = transferIdMatch[1].trim();
-        }
-
-        // Try receipt URL (https://receipt.ebirr.com/...)
-        if (!transferId) {
-            const urlMatch = smsText.match(/(https?:\/\/receipt\.ebirr\.com\/[^\s]+)/i);
-            if (urlMatch) {
-                transferId = urlMatch[1].trim();
-            }
-        }
-
-        // Try any numeric Transfer ID pattern
-        if (!transferId) {
-            const numMatch = smsText.match(/\b([0-9]{9,15})\b/);
-            if (numMatch) {
-                transferId = numMatch[1];
-            }
-        }
+        const providerCode = method.provider_code || method.name;
+        const proof = extractSmsPaymentReference(providerCode, smsText);
+        const transferId = proof.reference;
 
         if (!transferId) {
-            return ctx.reply(
-                "❌ Could not find Transfer-Id in your message.\n\nPlease paste the full SMS text from eBirr.\n\nExample:\n<code>[-EBIRR-KAAFI-] Transfer-Id: 802103540706, You have successfully transferred ETB880...</code>\n\nType /cancel to cancel.",
-                { parse_mode: "HTML" }
-            );
+            const msg = proof.mode === "transaction_id"
+                ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
+                : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
+            return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
         }
 
-        const verifyingMsg = await ctx.reply(`🔍 Found Transfer-Id: <code>${transferId}</code>\n⏳ Verifying with eBirr...`, { parse_mode: "HTML" });
+        const verifyingMsg = await ctx.reply(`🔍 Found transaction ID: <code>${transferId}</code>\n⏳ Verifying payment...`, { parse_mode: "HTML" });
 
         // Create the order first
         let userInputs = {};
@@ -2817,6 +2853,9 @@ bot.on("text", async (ctx) => {
 
         const verification = await verifyPayment(method.name, transferId, parseFloat(product.price), {
             settlementAccount: method.account_number || null,
+            expectedRecipientAccount: method.account_number || null,
+            senderAccount: state.senderAccountSuffix || null,
+            phone: state.collectedData?.phone || null,
         });
 
         if (verification.verified) {
@@ -2837,7 +2876,7 @@ bot.on("text", async (ctx) => {
                         } catch (e) { await ctx.reply(`✅ UC Delivered! Order #${orderId} completed.`, { parse_mode: "HTML" }); }
 
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                            `✅ AUTO-COMPLETED eBirr ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                            `✅ AUTO-COMPLETED ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                             buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName)
                         );
                     } else {
@@ -2849,7 +2888,7 @@ bot.on("text", async (ctx) => {
                         } catch (e) { }
 
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                            `🟡 eBirr ORDER #${orderId} verified but auto-delivery failed\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                            `🟡 ORDER #${orderId} verified but auto-delivery failed\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                             buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
                             `\n\n👇 Click Complete after manual delivery.`,
                             { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
@@ -2864,7 +2903,7 @@ bot.on("text", async (ctx) => {
                     } catch (e) { }
 
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                        `🟡 eBirr ORDER #${orderId} verified (Ragner error: ${ragnerError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                        `🟡 ORDER #${orderId} verified (Ragner error: ${ragnerError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                         buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
                         `\n\n👇 Click Complete after manual delivery.`,
                         { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
@@ -2879,7 +2918,7 @@ bot.on("text", async (ctx) => {
                 } catch (e) { await ctx.reply(`✅ Payment verified! Order #${orderId} approved.`, { parse_mode: "HTML" }); }
 
                 await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                    `✅ AUTO-VERIFIED eBirr ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n🔑 TX: ${transferId}` +
+                    `✅ AUTO-VERIFIED ORDER #${orderId}\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                     buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName),
                     { reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `complete_${orderId}` }]] } }
                 );
@@ -2904,8 +2943,8 @@ bot.on("text", async (ctx) => {
         return;
     }
 
-    // Handle eBirr SMS text for DEPOSIT verification
-    if (state?.step === "EBIRR_DEPOSIT_SMS_WAITING") {
+    // Handle SMS text for DEPOSIT verification
+    if (state?.step === "DEPOSIT_SMS_WAITING") {
         const smsText = text.trim();
         const method = state.depositMethod;
         const depositAmount = state.depositAmount;
@@ -2915,31 +2954,24 @@ bot.on("text", async (ctx) => {
             return ctx.reply("⚠️ Session expired. Please start the deposit again.", { parse_mode: "HTML" });
         }
 
-        // Extract Transfer-Id from SMS text
-        let transferId = null;
-        const transferIdMatch = smsText.match(/Transfer[-\s]*Id[:\s]+([0-9]{6,20})/i);
-        if (transferIdMatch) transferId = transferIdMatch[1].trim();
+        const providerCode = method.provider_code || method.name;
+        const proof = extractSmsPaymentReference(providerCode, smsText);
+        const transferId = proof.reference;
 
         if (!transferId) {
-            const urlMatch = smsText.match(/(https?:\/\/receipt\.ebirr\.com\/[^\s]+)/i);
-            if (urlMatch) transferId = urlMatch[1].trim();
-        }
-        if (!transferId) {
-            const numMatch = smsText.match(/\b([0-9]{9,15})\b/);
-            if (numMatch) transferId = numMatch[1];
-        }
-
-        if (!transferId) {
-            return ctx.reply(
-                "❌ Could not find Transfer-Id in your message.\n\nPlease paste the full SMS text from eBirr.\n\nType /cancel to cancel.",
-                { parse_mode: "HTML" }
-            );
+            const msg = proof.mode === "transaction_id"
+                ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
+                : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
+            return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
         }
 
         const verifyingMsg = await ctx.reply(`🔍 Found Transfer-Id: <code>${transferId}</code>\n⏳ Verifying...`, { parse_mode: "HTML" });
 
         const verification = await verifyPayment(method.name, transferId, parseFloat(depositAmount), {
             settlementAccount: method.account_number || null,
+            expectedRecipientAccount: method.account_number || null,
+            senderAccount: state.senderAccountSuffix || null,
+            phone: state.collectedData?.phone || null,
         });
 
         if (verification.verified) {
@@ -2961,7 +2993,7 @@ bot.on("text", async (ctx) => {
             await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit ${depositAmount} ETB (TX: ${transferId})`);
 
             try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB verified!\n\nTX: ${transferId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" }); } catch (e) { }
-            await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified eBirr deposit #${depositId}\n👤 @${ctx.from.username || userId}\n💰 ${depositAmount} ETB\n🔑 TX: ${transferId}`);
+            await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\n👤 @${ctx.from.username || userId}\n💰 ${depositAmount} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}`);
         } else {
             try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.`, { parse_mode: "HTML" }); } catch (e) { }
 
@@ -2973,7 +3005,7 @@ bot.on("text", async (ctx) => {
             const depositId = depositResult.rows[0].id;
 
             await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                `💰 NEW eBirr DEPOSIT (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Request ID: #${depositId}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}\n\nUse buttons below to manage:`,
+                `💰 NEW DEPOSIT (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Request ID: #${depositId}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}\n\nUse buttons below to manage:`,
                 { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] } }
             );
         }
@@ -3002,7 +3034,7 @@ bot.on("text", async (ctx) => {
             return ctx.reply("Could not continue BOA deposit verification. Please start the deposit again.", { parse_mode: "HTML" });
         }
 
-        const verifyingMsg = await ctx.reply("Verifying BOA deposit with ShegerPay...", { parse_mode: "HTML" });
+        const verifyingMsg = await ctx.reply("🔍 Verifying BOA deposit...", { parse_mode: "HTML" });
         const verification = await verifyPayment(method?.name || "boa", extractedTxId, depositAmount, {
             settlementAccount: method?.account_number || null,
             expectedRecipientAccount: method?.account_number || null,
@@ -3022,9 +3054,9 @@ bot.on("text", async (ctx) => {
             if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
                 try {
                     await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                        "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                        "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                 } catch (e) {
-                    await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                    await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                 }
                 delete userState[userId];
                 return;
@@ -3043,9 +3075,9 @@ bot.on("text", async (ctx) => {
                         const diffMinutes = Math.round((now - txTime) / (1000 * 60));
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                                `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                                `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the payment SMS right away.`, { parse_mode: "HTML" });
                         } catch (e) {
-                            await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                            await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the payment SMS right away.`, { parse_mode: "HTML" });
                         }
 
                         await ctx.telegram.sendMessage(process.env.ADMIN_ID,
@@ -3198,7 +3230,7 @@ bot.on("text", async (ctx) => {
         const externalProductId = product.type === "ragner" ? product.productId : (product.ragner_product_id || null);
         const expectedRecipient = method?.account_number || null;
 
-        const verifyingMsg = await ctx.reply("🔍 Verifying BOA payment with ShegerPay...", { parse_mode: "HTML" });
+        const verifyingMsg = await ctx.reply("🔍 Verifying BOA payment...", { parse_mode: "HTML" });
         const verification = await verifyPayment(method?.name || "boa", extractedTxId, paymentAmount, {
             settlementAccount: expectedRecipient,
             expectedRecipientAccount: expectedRecipient,
@@ -3232,7 +3264,13 @@ bot.on("text", async (ctx) => {
                 return;
             }
 
-            const manualReviewMessage = `⚠️ Could not verify BOA payment automatically.\n\nYour order has been submitted for manual review.\n❌ Error: ${verification.error || "Unknown verification issue."}\n\nYou will be notified when approved.`;
+            const rawVerificationError = verification.error || "Unknown verification issue.";
+            const isIdempotencyConflict = /idempotency-key/i.test(rawVerificationError);
+            const userFacingError = isIdempotencyConflict
+                ? "Temporary verification conflict on provider side."
+                : rawVerificationError;
+
+            const manualReviewMessage = `⚠️ Could not verify BOA payment automatically.\n\nYour order has been submitted for manual review.\n❌ Error: ${userFacingError}\n\nYou will be notified when approved.`;
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, manualReviewMessage, { parse_mode: "HTML" });
             } catch (e) {
@@ -3249,7 +3287,8 @@ bot.on("text", async (ctx) => {
                 `Method: ${method?.name || "Bank of Abyssinia"}\n` +
                 `OCR TX ID: ${extractedTxId}\n` +
                 `Sender Account: ${senderAccount}\n` +
-                `Error: ${verification.error}` +
+                `Error: ${isIdempotencyConflict ? "Idempotency key conflict (auto-check skipped)" : rawVerificationError}` +
+                (isIdempotencyConflict ? `\nTechnical Error: ${rawVerificationError}` : ``) +
                 buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
                 `\n\nUse buttons below to manage:`;
 
@@ -3286,9 +3325,9 @@ bot.on("text", async (ctx) => {
             await db.query(`UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1`, [orderId]);
             try {
                 await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                    "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
             } catch (e) {
-                await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
             }
             delete userState[userId];
             return;
@@ -3494,6 +3533,9 @@ bot.on("photo", async (ctx) => {
     }
 
     if (!state || (state.step !== "PAY" && state.step !== "DEPOSIT_PAYMENT_WAITING")) {
+        if (state?.step === "PAYMENT_SMS_WAITING" || state?.step === "DEPOSIT_SMS_WAITING" || state?.step === "AWAITING_BOA_SMS_SUFFIX" || state?.step === "AWAITING_BOA_DEPOSIT_SMS_SUFFIX") {
+            return ctx.reply("⚠️ Screenshot upload is disabled. Please paste your payment SMS text in this chat.", { parse_mode: "HTML" });
+        }
         console.log("❌ Not in PAY or DEPOSIT_PAYMENT_WAITING state");
         return ctx.reply("⚠️ Please start a new order with /start", { parse_mode: "HTML" });
     }
@@ -3531,21 +3573,27 @@ bot.on("photo", async (ctx) => {
 
                 console.log(`💳 Deposit method: "${method?.name}" → provider: "${provider}"`);
 
-                // BOA: go straight to verification — Verify.ET only needs referenceNumber + accountSuffix
-                let senderAccount = null;
-                let finalTxId = extractedTxId;
-
+                // BOA requires the sender account suffix for Verify.ET / ShegerPay lookup
                 if (provider === "boa") {
-                    // Store state in case verification fails and we need it for manual review
                     userState[userId].extractedTxId = extractedTxId;
                     userState[userId].ocrFullText = ocrFullText;
                     userState[userId].depositPaymentFileId = fileId;
+                    userState[userId].step = "AWAITING_BOA_DEPOSIT_SENDER_ACCOUNT";
+
+                    const boaDepositPrompt =
+                        "🏦 Bank of Abyssinia detected!\n\nTransaction ID found: " + extractedTxId +
+                        "\n\n📝 For BOA verification, please enter your **full account number** (sender account).\n\nExample: 1234567890123\n\nType /cancel to cancel.";
+                    try {
+                        await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, boaDepositPrompt, { parse_mode: "HTML" });
+                    } catch (e) {
+                        await ctx.reply(boaDepositPrompt, { parse_mode: "HTML" });
+                    }
+                    return;
                 }
 
-                const verification = await verifyPayment(method?.name || provider, finalTxId, depositAmount, {
+                const verification = await verifyPayment(method?.name || provider, extractedTxId, depositAmount, {
                     settlementAccount: method?.account_number || null,
                     expectedRecipientAccount: expectedRecipient,
-                    senderAccount: senderAccount,
                 });
                 if (verification.verified) {
                     // ============ FIX 1: Check for duplicate transaction ============
@@ -3561,9 +3609,9 @@ bot.on("photo", async (ctx) => {
                     if (existingApprovedDeposit.rows.length > 0 || existingApprovedOrder.rows.length > 0) {
                         try {
                             await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                                "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                         } catch (e) {
-                            await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                            await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                         }
                         delete userState[userId];
                         return;
@@ -3590,9 +3638,9 @@ bot.on("photo", async (ctx) => {
                                 console.log(`❌ Transaction is too old: ${diffMinutes} minutes ago`);
                                 try {
                                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                        `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                                        `❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the payment SMS right away.`, { parse_mode: "HTML" });
                                 } catch (e) {
-                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the screenshot right away.`, { parse_mode: "HTML" });
+                                    await ctx.reply(`❌ This payment was made ${diffMinutes} minutes ago.\n\nFor security, payments older than 15 minutes cannot be accepted.\n\nPlease make a new payment and send the payment SMS right away.`, { parse_mode: "HTML" });
                                 }
 
                                 await ctx.telegram.sendMessage(process.env.ADMIN_ID,
@@ -3825,9 +3873,9 @@ bot.on("photo", async (ctx) => {
                         await db.query(`UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1`, [orderId]);
                         try {
                             await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                                "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                         } catch (e) {
-                            await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.", { parse_mode: "HTML" });
+                            await ctx.reply("⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.", { parse_mode: "HTML" });
                         }
                         delete userState[userId];
                         return;
@@ -3966,7 +4014,7 @@ bot.on("photo", async (ctx) => {
 
                     if (duplicateFromShegerPay) {
                         await db.query(`UPDATE orders SET status='REJECTED', transaction_id=$1, note='Duplicate transaction' WHERE id=$2`, [extractedTxId, orderId]);
-                        const duplicateMessage = "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new screenshot.";
+                        const duplicateMessage = "⚠️ This transaction has already been used for a previous payment.\n\nPlease make a new payment and send a new payment SMS.";
 
                         try {
                             await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
