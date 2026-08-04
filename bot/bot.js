@@ -88,6 +88,34 @@ function extractSmsPaymentReference(providerCode, rawText) {
     return { bank, reference: null, mode: "receipt_url" };
 }
 
+function normalizeEtPhone(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    if (!digits) return null;
+    if (digits.startsWith("251") && digits.length === 12) {
+        return `0${digits.slice(3)}`;
+    }
+    if (digits.length === 10 && digits.startsWith("09")) {
+        return digits;
+    }
+    return null;
+}
+
+function extractPhoneFromSmsText(rawText) {
+    const text = String(rawText || "");
+    if (!text) return null;
+
+    const candidates = [
+        ...text.matchAll(/(?:\+?251|0)9\d{8}/g),
+        ...text.matchAll(/\b9\d{8}\b/g),
+    ];
+
+    for (const match of candidates) {
+        const phone = normalizeEtPhone(match[0]);
+        if (phone) return phone;
+    }
+    return null;
+}
+
 function resolveShegerPayProvider(methodName) {
     const name = methodName?.toString().trim().toLowerCase() || "";
     if (!name) return null;
@@ -2840,6 +2868,9 @@ bot.on("text", async (ctx) => {
         const providerCode = method.provider_code || method.name;
         const proof = extractSmsPaymentReference(providerCode, smsText);
         const transferId = proof.reference;
+        const verifyBank = proof.bank || resolveSmsBank(providerCode);
+        const smsPhone = extractPhoneFromSmsText(smsText);
+        const verificationPhone = normalizeEtPhone(state.collectedData?.phone) || smsPhone;
 
         if (!transferId) {
             userState[userId].verifying = false;
@@ -2847,6 +2878,14 @@ bot.on("text", async (ctx) => {
                 ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
+        }
+
+        if (verifyBank === "cbebirr" && !verificationPhone) {
+            userState[userId].verifying = false;
+            return ctx.reply(
+                "❌ CBE Birr verification requires sender phone number.\n\nPlease resend with the full SMS that contains your phone number, or include phone in your order details.",
+                { parse_mode: "HTML" }
+            );
         }
 
         // Pre-flight duplicate check before creating any order record
@@ -2876,23 +2915,58 @@ bot.on("text", async (ctx) => {
 
         const orderResult = await db.query(
             `INSERT INTO orders (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, delivery_type, status, payment_method, transaction_id, player_id, player_name, user_inputs)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10, $11, $12) RETURNING id`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10, $11, $12) RETURNING id, created_at`,
             [userId, ctx.from.username || null, productIdToInsert, externalProductId,
                 product.name, product.price, "manual", method.name,
                 transferId, extractedPlayerId || null, extractedPlayerName || null,
                 JSON.stringify(userInputs)]
         );
         const orderId = orderResult.rows[0].id;
+        const orderCreatedAt = new Date(orderResult.rows[0].created_at);
         userState[userId].orderId = orderId;
 
         const verification = await verifyPayment(method.name, transferId, parseFloat(product.price), {
             settlementAccount: method.account_number || null,
             expectedRecipientAccount: method.account_number || null,
             senderAccount: state.senderAccountSuffix || null,
-            phone: state.collectedData?.phone || null,
+            phone: verificationPhone || null,
         });
 
         if (verification.verified) {
+            // Enforce policy: payment must be made after creating the order.
+            const verifyTsRaw = verification.data?.timestamp || verification.data?.transactionDate || verification.data?.date || null;
+            const verifyTs = verifyTsRaw ? parseShegerTimestamp(String(verifyTsRaw)) : null;
+            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < orderCreatedAt) {
+                const diffMinutes = Math.round((orderCreatedAt - verifyTs) / (1000 * 60));
+
+                await db.query(
+                    "UPDATE orders SET status='PENDING', note=$1 WHERE id=$2",
+                    [`Payment appears older than order creation by ${diffMinutes} minutes`, orderId]
+                );
+
+                try {
+                    await ctx.telegram.editMessageText(
+                        verifyingMsg.chat.id,
+                        verifyingMsg.message_id,
+                        null,
+                        "⚠️ Payment appears to be made before this order was created.\n\nYour order was sent to manual review.",
+                        { parse_mode: "HTML" }
+                    );
+                } catch (e) { }
+
+                await ctx.telegram.sendMessage(
+                    process.env.ADMIN_ID,
+                    `📥 NEW ORDER (Manual Review - Old Payment)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\n🧾 Order ID: #${orderId}\n💳 Method: ${method.name}\n🔍 TX ID: ${transferId}\n🕒 TX Time: ${verifyTsRaw}\n🕒 Order Time: ${orderCreatedAt.toISOString()}\n⚠️ TX is older by ~${diffMinutes} minutes.` +
+                    buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
+                    `\n\nUse buttons below to manage:`,
+                    { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }]] } }
+                );
+
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 3000);
+                return;
+            }
+
             // Post-verification race-window duplicate check
             const raceCheck = await db.query(
                 "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED','COMPLETED') AND id != $2 LIMIT 1",
@@ -3010,6 +3084,9 @@ bot.on("text", async (ctx) => {
         const providerCode = method.provider_code || method.name;
         const proof = extractSmsPaymentReference(providerCode, smsText);
         const transferId = proof.reference;
+        const verifyBank = proof.bank || resolveSmsBank(providerCode);
+        const smsPhone = extractPhoneFromSmsText(smsText);
+        const verificationPhone = normalizeEtPhone(state.collectedData?.phone) || smsPhone;
 
         if (!transferId) {
             userState[userId].verifying = false;
@@ -3017,6 +3094,14 @@ bot.on("text", async (ctx) => {
                 ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
+        }
+
+        if (verifyBank === "cbebirr" && !verificationPhone) {
+            userState[userId].verifying = false;
+            return ctx.reply(
+                "❌ CBE Birr verification requires sender phone number.\n\nPlease resend with the full SMS that contains your phone number.",
+                { parse_mode: "HTML" }
+            );
         }
 
         // Pre-flight duplicate check before inserting any deposit record
@@ -3033,51 +3118,73 @@ bot.on("text", async (ctx) => {
             return ctx.reply("⚠️ This transaction ID has already been used for a previous payment.\n\nPlease make a new payment and send the new SMS.", { parse_mode: "HTML" });
         }
 
+        // Create deposit request first, then verify against this request time.
+        const pendingDeposit = await db.query(
+            `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
+             VALUES ($1, $2, $3, NULL, 'PENDING', $4) RETURNING id, created_at`,
+            [userId, depositAmount, method.name, transferId]
+        );
+        const depositId = pendingDeposit.rows[0].id;
+        const depositCreatedAt = new Date(pendingDeposit.rows[0].created_at);
+
         const verifyingMsg = await ctx.reply(`🔍 Found transaction ID: <code>${transferId}</code>\n⏳ Verifying...`, { parse_mode: "HTML" });
 
         const verification = await verifyPayment(method.name, transferId, parseFloat(depositAmount), {
             settlementAccount: method.account_number || null,
             expectedRecipientAccount: method.account_number || null,
             senderAccount: state.senderAccountSuffix || null,
-            phone: state.collectedData?.phone || null,
+            phone: verificationPhone || null,
         });
 
         if (verification.verified) {
+            const verifyTsRaw = verification.data?.timestamp || verification.data?.transactionDate || verification.data?.date || null;
+            const verifyTs = verifyTsRaw ? parseShegerTimestamp(String(verifyTsRaw)) : null;
+            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < depositCreatedAt) {
+                try {
+                    await ctx.telegram.editMessageText(
+                        verifyingMsg.chat.id,
+                        verifyingMsg.message_id,
+                        null,
+                        "⚠️ Payment appears to be made before this deposit request was created.\n\nYour deposit was sent to manual review.",
+                        { parse_mode: "HTML" }
+                    );
+                } catch (e) { }
+
+                await ctx.telegram.sendMessage(
+                    process.env.ADMIN_ID,
+                    `💰 NEW DEPOSIT (Manual Review - Old Payment)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Request ID: #${depositId}\n🔍 TX ID: ${transferId}\n🕒 TX Time: ${verifyTsRaw}\n🕒 Request Time: ${depositCreatedAt.toISOString()}\n\nUse buttons below to manage:`,
+                    { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_deposit_${depositId}` }, { text: "❌ Reject", callback_data: `reject_deposit_${depositId}` }]] } }
+                );
+
+                delete userState[userId];
+                setTimeout(() => showMainMenu(ctx), 3000);
+                return;
+            }
+
             // Post-verification race-window duplicate check
             const raceCheckDep = await db.query(
-                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED' LIMIT 1",
-                [transferId]
+                "SELECT id FROM deposit_requests WHERE transaction_id = $1 AND status = 'APPROVED' AND id != $2 LIMIT 1",
+                [transferId, depositId]
             );
             const raceCheckOrdDep = await db.query(
                 "SELECT id FROM orders WHERE transaction_id = $1 AND status IN ('APPROVED','COMPLETED') LIMIT 1",
                 [transferId]
             );
             if (raceCheckDep.rows.length > 0 || raceCheckOrdDep.rows.length > 0) {
+                await db.query("UPDATE deposit_requests SET status='REJECTED' WHERE id=$1", [depositId]);
                 delete userState[userId];
                 try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                     "⚠️ This transaction ID has already been used for a previous payment.", { parse_mode: "HTML" }); } catch (e) { }
                 return;
             }
 
-            const result = await db.query(
-                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, processed_at, transaction_id)
-                 VALUES ($1, $2, $3, NULL, 'APPROVED', CURRENT_TIMESTAMP, $4) RETURNING id`,
-                [userId, depositAmount, method.name, transferId]
-            );
-            const depositId = result.rows[0].id;
+            await db.query("UPDATE deposit_requests SET status='APPROVED', processed_at=CURRENT_TIMESTAMP WHERE id=$1", [depositId]);
             await updateWalletBalance(userId, depositAmount, "DEPOSIT", depositId, `Deposit ${depositAmount} ETB (TX: ${transferId})`);
 
             try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `✅ Deposit of ${depositAmount} ETB verified!\n\nTX: ${transferId}\n\nYour wallet has been updated.`, { parse_mode: "HTML" }); } catch (e) { }
             await ctx.telegram.sendMessage(process.env.ADMIN_ID, `✅ Auto-verified deposit #${depositId}\n👤 @${ctx.from.username || userId}\n💰 ${depositAmount} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}`);
         } else {
             try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `⚠️ Could not verify automatically.\n\nYour deposit has been submitted for manual review. You will be notified shortly.`, { parse_mode: "HTML" }); } catch (e) { }
-
-            const depositResult = await db.query(
-                `INSERT INTO deposit_requests (telegram_id, amount, payment_method, payment_file_id, status, transaction_id)
-                 VALUES ($1, $2, $3, NULL, 'PENDING', $4) RETURNING id`,
-                [userId, depositAmount, method.name, transferId]
-            );
-            const depositId = depositResult.rows[0].id;
 
             await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                 `💰 NEW DEPOSIT (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n💰 Amount: ${depositAmount} ETB\n💳 Method: ${method.name}\n🧾 Request ID: #${depositId}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}\n\nUse buttons below to manage:`,
