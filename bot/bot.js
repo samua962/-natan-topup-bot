@@ -2588,16 +2588,27 @@ bot.on("callback_query", async (ctx) => {
     // ----- ADMIN: REJECT DEPOSIT -----
     if (data.startsWith("reject_deposit_")) {
         const depositId = data.split("_")[2];
+        try { await ctx.answerCbQuery(); } catch (e) { }
         try {
             await db.query("UPDATE deposit_requests SET status = 'REJECTED', processed_at = CURRENT_TIMESTAMP WHERE id = $1", [depositId]);
             const deposit = (await db.query("SELECT * FROM deposit_requests WHERE id = $1", [depositId])).rows[0];
             if (deposit) {
                 await ctx.telegram.sendMessage(deposit.telegram_id, `❌ DEPOSIT REJECTED\n\nAmount: ${deposit.amount} ETB\n\nPlease contact support.`, { parse_mode: "HTML" });
             }
-            await ctx.editMessageCaption(`❌ Deposit #${depositId} - REJECTED`);
+            if (ctx.callbackQuery?.message?.photo) {
+                await ctx.editMessageCaption(`❌ Deposit #${depositId} - REJECTED`);
+            } else {
+                await ctx.editMessageText(`❌ Deposit #${depositId} - REJECTED`);
+            }
         } catch (error) {
             console.error("Reject deposit error:", error);
-            await ctx.editMessageCaption("⚠️ Error rejecting deposit");
+            try {
+                if (ctx.callbackQuery?.message?.photo) {
+                    await ctx.editMessageCaption("⚠️ Error rejecting deposit");
+                } else {
+                    await ctx.editMessageText("⚠️ Error rejecting deposit");
+                }
+            } catch (e) { }
         }
         return;
     }
@@ -2731,7 +2742,10 @@ bot.on("callback_query", async (ctx) => {
             } catch (e) { console.error("Edit message error (reject order):", e.message); }
         } catch (error) {
             console.error("Reject error:", error);
-            try { await ctx.editMessageText("⚠️ Error rejecting order"); } catch (e) { }
+            try {
+                if (ctx.callbackQuery?.message?.photo) await ctx.editMessageCaption("⚠️ Error rejecting order");
+                else await ctx.editMessageText("⚠️ Error rejecting order");
+            } catch (e) { }
         }
         return;
     }
@@ -2933,10 +2947,11 @@ bot.on("text", async (ctx) => {
         });
 
         if (verification.verified) {
-            // Enforce policy: payment must be made after creating the order.
+            // Allow small clock/provider latency; only flag clearly older payments.
             const verifyTsRaw = verification.data?.timestamp || verification.data?.transactionDate || verification.data?.date || null;
             const verifyTs = verifyTsRaw ? parseShegerTimestamp(String(verifyTsRaw)) : null;
-            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < orderCreatedAt) {
+            const orderGraceCutoff = new Date(orderCreatedAt.getTime() - 10 * 60 * 1000);
+            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < orderGraceCutoff) {
                 const diffMinutes = Math.round((orderCreatedAt - verifyTs) / (1000 * 60));
 
                 await db.query(
@@ -3139,7 +3154,8 @@ bot.on("text", async (ctx) => {
         if (verification.verified) {
             const verifyTsRaw = verification.data?.timestamp || verification.data?.transactionDate || verification.data?.date || null;
             const verifyTs = verifyTsRaw ? parseShegerTimestamp(String(verifyTsRaw)) : null;
-            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < depositCreatedAt) {
+            const depositGraceCutoff = new Date(depositCreatedAt.getTime() - 10 * 60 * 1000);
+            if (verifyTs && !Number.isNaN(verifyTs.getTime()) && verifyTs < depositGraceCutoff) {
                 try {
                     await ctx.telegram.editMessageText(
                         verifyingMsg.chat.id,
