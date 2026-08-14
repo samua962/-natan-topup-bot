@@ -1431,7 +1431,17 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
 2️⃣ Send EXACTLY ${productInfo.price} ETB.
 3️⃣ Send the <b>last 5 digits</b> of your sender account number.
 
+
 📌 Example: <code>12345</code>
+
+
+━━━━━━━━━━━━━━━━━━━━
+🔹 ቅደም ተከተል:
+1️⃣ ሂሳብ ቁጥር እና ስም ያረጋግጡ።
+2️⃣ በትክክል ${productInfo.price} ETB ይላኩ።
+3️⃣ የላኪው ሂሳብ ቁጥር የመጨረሻ <b>5 አሃዞች</b> ይላኩ።
+
+📌 ምሳሌ: <code>12345</code>
 
 Type /cancel to cancel.`;
         await ctx.reply(msg, { parse_mode: "HTML" });
@@ -1446,17 +1456,30 @@ Type /cancel to cancel.`;
 📞 Account: ${paymentMethod.account_number}
 👤 Name: ${paymentMethod.account_name || "N/A"}
 
-${paymentMethod.instructions || ""}
+
 
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ LEGAL WARNING:
 By paying, you confirm you are 18+ and agree to our Terms.
+
 
 🔹 INSTRUCTIONS:
 1️⃣ Copy account & verify name.
 2️⃣ Send EXACTLY ${productInfo.price} ETB only.
 3️⃣ After payment, <b>copy and paste your payment SMS</b> here.
 4️⃣ We verify automatically using transaction reference.
+
+
+⚠️ ሕጋዊ ማስጠንቀቂያ:
+ክፍያ በማድረግ፣ ከ18 ዓመት በላይ መሆንን ተረድተዋል እና የእኛን ውሎች ተስማምተዋል።
+
+1️⃣ ሂሳብ ቁጥር እና ስም ያረጋግጡ።
+2️⃣ በትክክል ${productInfo.price} ETB ብቻ ይላኩ።
+3️⃣ ከክፍያ በኋላ፣ <b>የክፍያ ኤስ.ኤም.ኤስ ጽሑፍ</b> እዚህ ይላኩ።
+4️⃣ በግብይት ማጣቀሻ በራስ-ሰር እናረጋግጣለን።
+
+
+
 
 ${getTxIdHint(paymentMethod.name)}
 
@@ -3732,7 +3755,11 @@ bot.on("photo", async (ctx) => {
 
     if (!state || (state.step !== "PAY" && state.step !== "DEPOSIT_PAYMENT_WAITING")) {
         if (state?.step === "PAYMENT_SMS_WAITING" || state?.step === "DEPOSIT_SMS_WAITING" || state?.step === "AWAITING_BOA_SMS_SUFFIX" || state?.step === "AWAITING_BOA_DEPOSIT_SMS_SUFFIX") {
-            return ctx.reply("⚠️ Screenshot upload is disabled. Please paste your payment SMS text in this chat.", { parse_mode: "HTML" });
+            return ctx.reply(
+                "⚠️ Screenshot upload is disabled. Please paste your payment SMS text in this chat.\n\n" +
+                "⚠️ ስክሪንሾት መስቀያ አልተፈቀደም። እባክዎን የክፍያ SMS ጽሑፍ በዚህ ቻት ያስገቡ።",
+                { parse_mode: "HTML" }
+            );
         }
         console.log("❌ Not in PAY or DEPOSIT_PAYMENT_WAITING state");
         return ctx.reply("⚠️ Please start a new order with /start", { parse_mode: "HTML" });
