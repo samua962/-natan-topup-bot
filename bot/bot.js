@@ -41,7 +41,7 @@ function resolveSmsBank(providerCode) {
     if (!name) return null;
 
     if (name.includes("tele-birr") || name.includes("tele birr") || name.includes("telebirr")) return "telebirr";
-    if (name.includes("cbebirr") || name.includes("cbe birr")) return "cbebirr";
+    if (name.replace(/[\s_-]+/g, "").includes("cbebirr")) return "cbebirr";
     if (name.includes("cbe")) return "cbe";
     if (name.includes("awash")) return "awash";
     if (name.includes("dashen")) return "dashen";
@@ -78,6 +78,14 @@ function extractSmsPaymentReference(providerCode, rawText) {
         return { bank, reference: null, mode: "transaction_id" };
     }
 
+    // CBE Birr SMS messages may contain an FT receipt number without a URL.
+    if (bank === "cbebirr") {
+        const receiptMatch = smsText.match(/\bFT[A-Z0-9]{4,30}\b/i);
+        if (receiptMatch?.[0]) {
+            return { bank, reference: receiptMatch[0].trim(), mode: "receipt_number" };
+        }
+    }
+
     // Non-Telebirr: receipt URL from SMS. Strip trailing punctuation (periods, commas, etc.)
     const urlMatch = smsText.match(/https?:\/\/[^\s,;]+/i);
     if (urlMatch?.[0]) {
@@ -105,8 +113,8 @@ function extractPhoneFromSmsText(rawText) {
     if (!text) return null;
 
     const candidates = [
-        ...text.matchAll(/(?:\+?251|0)9\d{8}/g),
-        ...text.matchAll(/\b9\d{8}\b/g),
+        ...text.matchAll(/(?:\+?251[\s-]?)?0?9(?:[\s-]?\d){8}/g),
+        ...text.matchAll(/\b9(?:[\s-]?\d){8}\b/g),
     ];
 
     for (const match of candidates) {
@@ -1414,7 +1422,7 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
     userState[userId].paymentMethod = paymentMethod;
     userState[userId].productInfo = productInfo;
 
-    const provider = resolveShegerPayProvider(paymentMethod.name) || "telebirr";
+    const provider = resolveSmsBank(paymentMethod.provider_code || paymentMethod.name) || "telebirr";
 
     if (provider === "boa") {
         userState[userId].step = "AWAITING_BOA_SMS_SUFFIX";
@@ -1445,6 +1453,19 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
 
 Type /cancel to cancel.`;
         await ctx.reply(msg, { parse_mode: "HTML" });
+        return;
+    }
+
+    if (provider === "cbebirr") {
+        userState[userId].step = "AWAITING_CBEBIRR_PHONE";
+        await ctx.reply(
+            `📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n\n` +
+            `🏦 ${paymentMethod.name}\n📞 Account: ${paymentMethod.account_number}\n👤 Name: ${paymentMethod.account_name || "N/A"}\n\n` +
+            `Send EXACTLY ${productInfo.price} ETB, then send the phone number used to make the CBE Birr payment.\n\n` +
+            `📱 Example: <code>0912345678</code> or <code>+251912345678</code>\n\n` +
+            `Type /cancel to cancel.`,
+            { parse_mode: "HTML" }
+        );
         return;
     }
 
@@ -2227,6 +2248,18 @@ bot.on("callback_query", async (ctx) => {
             return;
         }
 
+        if (provider === "cbebirr") {
+            userState[userId].step = "AWAITING_CBEBIRR_DEPOSIT_PHONE";
+            await ctx.reply(
+                `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n` +
+                `Send EXACTLY ${amount} ETB, then send the phone number used to make the CBE Birr payment.\n\n` +
+                `📱 Example: <code>0912345678</code> or <code>+251912345678</code>\n\n` +
+                `Type /cancel to cancel.`,
+                { parse_mode: "HTML" }
+            );
+            return;
+        }
+
         userState[userId].step = "DEPOSIT_SMS_WAITING";
         const details = `💰 DEPOSIT REQUEST\n\nAmount: ${amount} ETB\n🏦 ${selectedMethod.name}\n📞 Account: ${selectedMethod.account_number}\n👤 Name: ${selectedMethod.account_name || "N/A"}\n\n${selectedMethod.instructions || "After transfer, paste your payment SMS in this chat."}\n\n🔹 Send your payment SMS text in this chat.\n${getTxIdHint(selectedMethod.name)}\n\nType /cancel to cancel`;
         await ctx.reply(details, { parse_mode: "HTML" });
@@ -2857,6 +2890,26 @@ bot.on("text", async (ctx) => {
         } else {
             return ctx.reply("❌ Please send images or type 'done' to finish and broadcast.");
         }
+    }
+
+    if (state?.step === "AWAITING_CBEBIRR_PHONE" || state?.step === "AWAITING_CBEBIRR_DEPOSIT_PHONE") {
+        const phone = normalizeEtPhone(text);
+        if (!phone) {
+            return ctx.reply(
+                "❌ Invalid Ethiopian phone number. Please send a number like <code>0912345678</code> or <code>+251912345678</code>.",
+                { parse_mode: "HTML" }
+            );
+        }
+
+        if (!userState[userId].collectedData) userState[userId].collectedData = {};
+        userState[userId].collectedData.phone = phone;
+
+        const isDepositPhone = state.step === "AWAITING_CBEBIRR_DEPOSIT_PHONE";
+        userState[userId].step = isDepositPhone ? "DEPOSIT_SMS_WAITING" : "PAYMENT_SMS_WAITING";
+        return ctx.reply(
+            `✅ Phone number saved: <code>${phone}</code>\n\nNow paste the CBE Birr payment SMS.\n${getTxIdHint(isDepositPhone ? state.depositMethod?.name : state.paymentMethod?.name)}`,
+            { parse_mode: "HTML" }
+        );
     }
 
     if (state?.step === "AWAITING_BOA_SMS_SUFFIX") {
@@ -3754,7 +3807,7 @@ bot.on("photo", async (ctx) => {
     }
 
     if (!state || (state.step !== "PAY" && state.step !== "DEPOSIT_PAYMENT_WAITING")) {
-        if (state?.step === "PAYMENT_SMS_WAITING" || state?.step === "DEPOSIT_SMS_WAITING" || state?.step === "AWAITING_BOA_SMS_SUFFIX" || state?.step === "AWAITING_BOA_DEPOSIT_SMS_SUFFIX") {
+        if (state?.step === "PAYMENT_SMS_WAITING" || state?.step === "DEPOSIT_SMS_WAITING" || state?.step === "AWAITING_BOA_SMS_SUFFIX" || state?.step === "AWAITING_BOA_DEPOSIT_SMS_SUFFIX" || state?.step === "AWAITING_CBEBIRR_PHONE" || state?.step === "AWAITING_CBEBIRR_DEPOSIT_PHONE") {
             return ctx.reply(
                 "⚠️ Screenshot upload is disabled. Please paste your payment SMS text in this chat.\n\n" +
                 "⚠️ ስክሪንሾት መስቀያ አልተፈቀደም። እባክዎን የክፍያ SMS ጽሑፍ በዚህ ቻት ያስገቡ።",

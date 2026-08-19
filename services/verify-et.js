@@ -40,7 +40,7 @@ function resolveVerifyEtBank(methodName) {
         return "telebirr";
     }
     // "cbebirr" / "cbe birr" must be checked BEFORE plain "cbe"
-    if (name.includes("cbebirr") || name.includes("cbe birr")) {
+    if (name.replace(/[\s_-]+/g, "").includes("cbebirr")) {
         return "cbebirr";
     }
     if (name.includes("cbe")) {
@@ -813,5 +813,6 @@ function sleep(ms) {
 
 module.exports = {
     resolveVerifyEtBank,
+    buildVerifyEtPayload,
     verifyPaymentWithVerifyEt,
 };
