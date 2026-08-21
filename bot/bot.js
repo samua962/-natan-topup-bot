@@ -32,6 +32,9 @@ function getTxIdHint(methodName) {
     if (bank === "telebirr") {
         return "📱 Telebirr: paste the SMS containing your transaction number (e.g. DGR9AO5VVX).";
     }
+    if (bank === "cbebirr") {
+        return "🏦 CBE Birr: paste the SMS containing your transaction ID (e.g. DHL51LWWL9J).";
+    }
     return "🔗 Paste the SMS that contains your receipt URL (http/https link).";
 }
 
@@ -78,12 +81,13 @@ function extractSmsPaymentReference(providerCode, rawText) {
         return { bank, reference: null, mode: "transaction_id" };
     }
 
-    // CBE Birr SMS messages may contain an FT receipt number without a URL.
+    // CBE Birr SMS messages contain a transaction ID without a URL.
     if (bank === "cbebirr") {
-        const receiptMatch = smsText.match(/\bFT[A-Z0-9]{4,30}\b/i);
-        if (receiptMatch?.[0]) {
-            return { bank, reference: receiptMatch[0].trim(), mode: "receipt_number" };
+        const transactionMatch = smsText.match(/\b(?:DHL|FT)[A-Z0-9]{4,30}\b/i);
+        if (transactionMatch?.[0]) {
+            return { bank, reference: transactionMatch[0].trim(), mode: "transaction_id" };
         }
+        return { bank, reference: null, mode: "transaction_id" };
     }
 
     // Non-Telebirr: receipt URL from SMS. Strip trailing punctuation (periods, commas, etc.)
@@ -128,6 +132,7 @@ function resolveShegerPayProvider(methodName) {
     const name = methodName?.toString().trim().toLowerCase() || "";
     if (!name) return null;
     if (name.includes("telebirr") || name.includes("tele-birr") || name.includes("tele birr")) return "telebirr";
+    if (name.replace(/[\s_-]+/g, "").includes("cbebirr")) return "cbebirr";
     if (name.includes("cbe")) return "cbe";
     if (name.includes("awash")) return "awash";
     if (name.includes("dashen")) return "dashen";
@@ -2965,7 +2970,7 @@ bot.on("text", async (ctx) => {
         if (!transferId) {
             userState[userId].verifying = false;
             const msg = proof.mode === "transaction_id"
-                ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
+                ? `❌ Could not find a transaction ID in your ${verifyBank === "cbebirr" ? "CBE Birr" : "Telebirr"} SMS.\n\nPlease paste the full payment SMS text.`
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
         }
@@ -3182,7 +3187,7 @@ bot.on("text", async (ctx) => {
         if (!transferId) {
             userState[userId].verifying = false;
             const msg = proof.mode === "transaction_id"
-                ? "❌ Could not extract Telebirr transaction number from your SMS.\n\nPlease paste the full Telebirr SMS text."
+                ? `❌ Could not find a transaction ID in your ${verifyBank === "cbebirr" ? "CBE Birr" : "Telebirr"} SMS.\n\nPlease paste the full payment SMS text.`
                 : "❌ Could not find a receipt URL in your SMS.\n\nPlease paste the SMS that contains the receipt link (http/https).";
             return ctx.reply(`${msg}\n\nType /cancel to cancel.`, { parse_mode: "HTML" });
         }

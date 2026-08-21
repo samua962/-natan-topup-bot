@@ -3,6 +3,25 @@ const router = express.Router();
 const db = require("../../database/db");
 const axios = require("axios");
 
+function normalizeTelegramChatId(value) {
+    const chatId = String(value || "").trim();
+    if (!chatId) return null;
+    return /^-?\d+$/.test(chatId) ? chatId : `@${chatId.replace(/^@+/, "")}`;
+}
+
+async function sendTelegramMessage(api, chatId, text) {
+    try {
+        await axios.post(`${api}/sendMessage`, { chat_id: chatId, text });
+        return true;
+    } catch (error) {
+        console.error("Telegram message failed", {
+            chatId,
+            error: error.response?.data?.description || error.message,
+        });
+        return false;
+    }
+}
+
 // Helper: returns current active round or null
 async function getCurrentRound() {
     const result = await db.query(
@@ -84,19 +103,20 @@ router.post("/pick-winner", async (req, res) => {
         );
         // Notify winner and channel
         const botToken = process.env.BOT_TOKEN;
-        const channel = process.env.CHANNEL_USERNAME;
         const api = `https://api.telegram.org/bot${botToken}`;
-        await axios.post(`${api}/sendMessage`, {
-            chat_id: winner.user_id,
-            text: `🎉 Congratulations! You won the giveaway with ticket #${winner.ticket_number}!\n💰 Prize: ${prize} ETB has been added to your wallet.`,
-            parse_mode: "Markdown",
-        }).catch(e => console.error("DM fail"));
-        if (channel) {
-            await axios.post(`${api}/sendMessage`, {
-                chat_id: `@${channel.replace("@","")}`,
-                text: `🎊 GIVEAWAY WINNER ANNOUNCEMENT 🎊\n\nTicket #${winner.ticket_number} has won ${prize} ETB!\nCongratulations!`,
-                parse_mode: "Markdown",
-            }).catch(e => console.error("Channel fail"));
+        await sendTelegramMessage(
+            api,
+            winner.user_id,
+            `🎉 Congratulations! You won the giveaway with ticket #${winner.ticket_number}!\n💰 Prize: ${prize} ETB has been added to your wallet.`
+        );
+
+        const channelChatId = normalizeTelegramChatId(process.env.CHANNEL_USERNAME);
+        if (channelChatId) {
+            await sendTelegramMessage(
+                api,
+                channelChatId,
+                `🎊 GIVEAWAY WINNER ANNOUNCEMENT 🎊\n\nTicket #${winner.ticket_number} has won ${prize} ETB!\nCongratulations!`
+            );
         }
         res.json({ success: true, winner: { user_id: winner.user_id, ticket: winner.ticket_number, prize } });
     } catch (err) {
