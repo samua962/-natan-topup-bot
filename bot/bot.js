@@ -83,7 +83,7 @@ function extractSmsPaymentReference(providerCode, rawText) {
 
     // CBE Birr SMS messages contain a transaction ID without a URL.
     if (bank === "cbebirr") {
-        const transactionMatch = smsText.match(/\b(?:DHL|FT)[A-Z0-9]{4,30}\b/i);
+        const transactionMatch = smsText.match(/\b(?:DHL|DHM|FT)[A-Z0-9]{4,30}\b/i);
         if (transactionMatch?.[0]) {
             return { bank, reference: transactionMatch[0].trim(), mode: "transaction_id" };
         }
