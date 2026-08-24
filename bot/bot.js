@@ -1275,10 +1275,14 @@ async function showWarningMessage(ctx, product) {
 async function askForFields(ctx, product) {
     const state = userState[ctx.from.id];
     const productType = product.product_type;
+    const productName = String(product.name || "").toLowerCase();
+    const requiresTelegramUsername = productType === "telegram" || /\b(stars?|premium)\b/.test(productName);
 
     const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
 
-    if (pubgTypes.includes(productType)) {
+    if (requiresTelegramUsername) {
+        state.requiredFields = ["username"];
+    } else if (pubgTypes.includes(productType)) {
         state.requiredFields = ["player_id"];
     } else if (productType === "tiktok") {
         state.requiredFields = ["email", "phone", "password"];
@@ -1317,6 +1321,8 @@ async function askForFields(ctx, product) {
 // =====================
 async function processFieldInput(ctx, product, state, input) {
     const fields = state.requiredFields;
+    const productName = String(product?.name || "").toLowerCase();
+    const requiresTelegramUsername = product?.product_type === "telegram" || /\b(stars?|premium)\b/.test(productName);
     const currentField = fields[state.currentField];
     state.collectedData[currentField] = input;
     state.currentField++;
@@ -1334,6 +1340,8 @@ async function processFieldInput(ctx, product, state, input) {
     let confirmMessage = "✅ Please confirm your information:\n\n";
     if (product.product_type === "tiktok") {
         confirmMessage += `📧 Email: ${state.collectedData.email}\n📱 Phone: ${state.collectedData.phone}\n🔐 Password: ${"•".repeat(state.collectedData.password.length)}\n\n`;
+    } else if (requiresTelegramUsername) {
+        confirmMessage += `👤 Telegram Username: ${state.collectedData.username}\n\n`;
     } else if (product.product_type === "telegram") {
         confirmMessage += `👤 Username: ${state.collectedData.username}\n📱 Phone: ${state.collectedData.phone}\n\n`;
     } else {
@@ -2696,7 +2704,8 @@ bot.on("callback_query", async (ctx) => {
             }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
-            if (order.delivery_type === "ragner") {
+            const isInstantOrder = order.delivery_type === "ragner" || Boolean(order.external_product_id);
+            if (isInstantOrder) {
                 const validation = await validatePlayer(order.external_product_id, order.player_id);
                 if (!validation || !validation.success) {
                     try { await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" }); } catch (e) { }

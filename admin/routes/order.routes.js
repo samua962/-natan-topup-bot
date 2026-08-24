@@ -31,7 +31,7 @@ router.post("/:id/approve", async (req, res) => {
   );
 
   // 🔥 INSTANT DELIVERY
-  if (order.delivery_type === "ragner") {
+  if (order.delivery_type === "ragner" || order.external_product_id) {
     const result = await createOrder(
       order.external_product_id,
       order.player_id
