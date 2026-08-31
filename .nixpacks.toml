@@ -5,7 +5,7 @@ nixPkgs = ["nodejs_20"]
 cmds = ["npm install"]
 
 [phases.build]
-cmds = ["npm install", "cd admin-dashboard && npm install && npm run build"]
+cmds = ["npm run build", "test -f admin-dashboard/build/index.html"]
 
 [phases.deploy]
 cmd = "node index.js"
