@@ -7,6 +7,7 @@ export default function Settings() {
   const [bannerUrl, setBannerUrl] = useState("");
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [profitMargins, setProfitMargins] = useState({ categories: [] });
+  const [expandedCategory, setExpandedCategory] = useState(null);
   const [loading, setLoading] = useState(false);
   const [newMethod, setNewMethod] = useState({ 
     name: "", 
@@ -46,7 +47,9 @@ export default function Settings() {
         if (Array.isArray(savedMargins.categories)) {
           setProfitMargins(savedMargins);
         } else if (Array.isArray(savedMargins.ranges)) {
-          setProfitMargins({ categories: [{ key: "default", name: "Default", ranges: savedMargins.ranges }] });
+          setProfitMargins({
+            categories: [{ key: "default", name: "Default", ranges: savedMargins.ranges }],
+          });
         }
       } else {
         setProfitMargins({
@@ -56,6 +59,8 @@ export default function Settings() {
             { key: "free_fire_mena", name: "Free Fire MENA", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
             { key: "delta_force", name: "Delta Force", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
             { key: "blood_strike", name: "Blood Strike", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "telegram_stars", name: "Telegram Stars", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "telegram_premium", name: "Telegram Premium", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
             { key: "mobile_legends_global", name: "Mobile Legends Global", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
             { key: "arena_breakout", name: "Arena Breakout", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
             { key: "bigo_live", name: "Bigo Live", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
@@ -323,7 +328,7 @@ export default function Settings() {
             <TrendingUp className="h-5 w-5 text-green-500 mr-2" />
             <h3 className="text-base md:text-lg font-semibold text-gray-800">Profit Margins</h3>
           </div>
-          <p className="text-xs md:text-sm text-gray-500 mt-1">Configure profit margins based on USD price ranges</p>
+          <p className="text-xs md:text-sm text-gray-500 mt-1">Use the exact FZR category ID and full category name, then configure USD price tiers.</p>
         </div>
         
         <div className="p-4 md:p-6 space-y-3">
@@ -336,8 +341,8 @@ export default function Settings() {
               {expandedCategory === categoryIndex && (
                 <div className="border-t border-gray-200 p-3 space-y-3 bg-gray-50">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <input value={category.key} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, key: e.target.value } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Category key" />
-                    <input value={category.name || ""} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, name: e.target.value } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Display name" />
+                    <label className="text-xs font-medium text-gray-600">FZR Category ID<input value={category.key} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, key: e.target.value } : c) }))} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="pubg_mobile_auto" /></label>
+                    <label className="text-xs font-medium text-gray-600">Full FZR Category Name<input value={category.name || ""} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, name: e.target.value } : c) }))} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="PUBG Mobile (Auto)" /></label>
                   </div>
                   {(category.ranges || []).map((range, rangeIndex) => (
                     <div key={rangeIndex} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
@@ -353,7 +358,7 @@ export default function Settings() {
               )}
             </div>
           ))}
-          <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: [...p.categories, { key: "new_category", name: "New Category", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }] }] }))} className="flex items-center gap-1 px-3 py-2 text-blue-600 border border-blue-200 rounded-lg text-sm"><Plus size={15} /> Add Category</button>
+          <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: [...p.categories, { key: "new_category", name: "New Category", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] }] }))} className="flex items-center gap-1 px-3 py-2 text-blue-600 border border-blue-200 rounded-lg text-sm"><Plus size={15} /> Add Category</button>
         </div>
 
         <div className="p-4 md:p-6 border-t border-gray-100">

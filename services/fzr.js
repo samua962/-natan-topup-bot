@@ -174,6 +174,8 @@ async function createTopupOrder(categoryId, offerId, fields = {}) {
     };
   }
 
+  console.log(`[FZR] Order delivered category_id=${normalizedCategoryId} offer_id=${normalizedOfferId} order_id=${res.order?.id || res.id || res.order_id || "unknown"}`);
+
   return {
     success: res.ok === true || Boolean(res.order),
     data: res,

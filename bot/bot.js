@@ -806,11 +806,8 @@ async function resolveStoredFzrProduct(order) {
     let offerId = parsed.offerId;
     if (!categoryId) return parsed;
 
+    if (String(categoryId).toLowerCase() === "pubg") categoryId = "pubg_mobile_auto";
     let offersData = await getTopupOffers(categoryId);
-    if (!offersData.offers.length && categoryId === "pubg") {
-        categoryId = "pubg_mobile_auto";
-        offersData = await getTopupOffers(categoryId);
-    }
     const offers = Array.isArray(offersData.offers) ? offersData.offers : [];
     const exactOffer = offers.find((offer) => String(offer.offer_id || "") === String(offerId || ""));
     if (exactOffer) return { categoryId, offerId: exactOffer.offer_id };
@@ -2186,6 +2183,10 @@ async function showProductsByCategory(ctx, categoryId) {
 
 function getFzrTopupCategoryName(categoryName, categoryId = "") {
     const name = `${String(categoryName || "")} ${String(categoryId || "")}`.toLowerCase();
+    if (["1", "pubg", "pubg_mobile", "pubg_mobile_auto"].includes(String(categoryId).toLowerCase())) return "pubg";
+    if (["2", "freefire", "free_fire", "free_fire_latam", "free_fire_mena"].includes(String(categoryId).toLowerCase())) return "free_fire";
+    if (["3", "bloodstrike", "blood_strike"].includes(String(categoryId).toLowerCase())) return "blood_strike";
+    if (["5", "telegram", "telegram_stars", "telegram_premium"].includes(String(categoryId).toLowerCase())) return "telegram";
     if (name.includes("pubg")) return "pubg";
     if (name.includes("free fire") || name.includes("free_fire") || name.includes("freefire")) return "free_fire";
     if (name.includes("delta")) return "delta_force";
@@ -2566,7 +2567,7 @@ bot.on("callback_query", async (ctx) => {
     }
     if (data === "show_games" || data === "🎮 Games") {
         pushHistory(userId, "main_menu");
-        const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND name IN ('pubg', 'free_fire') ORDER BY position");
+        const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND lower(replace(name, '_', '')) IN ('pubg', 'freefire', 'bloodstrike', 'deltaforce', 'telegram') ORDER BY position");
         const buttons = buildButtonsHorizontal(gameCategories.rows.map((g) => ({ text: g.display_name, callback_data: `cat_${g.id}` })));
         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
@@ -2642,10 +2643,10 @@ bot.on("callback_query", async (ctx) => {
         const category = categoryResult.rows[0];
         if (!category) return ctx.reply("❌ Category not found.");
 
-        const categoryKey = getFzrTopupCategoryName(category.name || category.display_name, category.id);
+        const categoryKey = getFzrTopupCategoryName(`${category.name || ""} ${category.display_name || ""}`, category.id);
         if (categoryKey) {
             pushHistory(userId, "categories");
-            return showFzrTopupCategoryMenu(ctx, category.name || category.display_name, categoryId);
+            return showFzrTopupCategoryMenu(ctx, `${category.name || ""} ${category.display_name || ""}`, categoryId);
         }
 
         const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
