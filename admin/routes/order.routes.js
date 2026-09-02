@@ -5,9 +5,13 @@ const { getTopupOffers, createTopupOrder, createTelegramStarsOrder, createTelegr
 const axios = require("axios");
 
 async function resolveFzrOffer(order, config) {
-  const categoryId = config.category_id || order.external_product_id;
+  let categoryId = config.category_id || order.external_product_id;
   let offerId = config.offer_id || order.product_id;
-  const data = await getTopupOffers(categoryId);
+  let data = await getTopupOffers(categoryId);
+  if (!data.offers.length && String(categoryId).toLowerCase() === "pubg") {
+    categoryId = "pubg_mobile_auto";
+    data = await getTopupOffers(categoryId);
+  }
   const offers = Array.isArray(data.offers) ? data.offers : [];
   if (offers.some((offer) => String(offer.offer_id) === String(offerId))) return { categoryId, offerId };
   const productName = String(order.product_name || "").toLowerCase().trim();

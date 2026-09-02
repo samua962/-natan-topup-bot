@@ -337,6 +337,9 @@ async function handlePaymentVerified(data, deliveryId) {
                 const { createTopupOrder, createTelegramStarsOrder, createTelegramPremiumOrder } = require("../../services/fzr");
                 let fzrProduct = {};
                 try { fzrProduct = JSON.parse(pendingOrder.external_product_id || "{}"); } catch (_) { }
+                if (pendingOrder.delivery_type === "fzr" && String(fzrProduct.category_id || pendingOrder.external_product_id).toLowerCase() === "pubg") {
+                    fzrProduct.category_id = "pubg_mobile_auto";
+                }
                 const fzrResult = pendingOrder.delivery_type === "fzr"
                     ? await createTopupOrder(fzrProduct.category_id || pendingOrder.external_product_id, fzrProduct.offer_id || pendingOrder.product_id, { player_id: pendingOrder.player_id })
                     : fzrProduct.type === "telegram_stars"

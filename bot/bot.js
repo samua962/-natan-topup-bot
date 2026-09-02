@@ -806,7 +806,11 @@ async function resolveStoredFzrProduct(order) {
     let offerId = parsed.offerId;
     if (!categoryId) return parsed;
 
-    const offersData = await getTopupOffers(categoryId);
+    let offersData = await getTopupOffers(categoryId);
+    if (!offersData.offers.length && categoryId === "pubg") {
+        categoryId = "pubg_mobile_auto";
+        offersData = await getTopupOffers(categoryId);
+    }
     const offers = Array.isArray(offersData.offers) ? offersData.offers : [];
     const exactOffer = offers.find((offer) => String(offer.offer_id || "") === String(offerId || ""));
     if (exactOffer) return { categoryId, offerId: exactOffer.offer_id };
@@ -2672,7 +2676,7 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("fc")) {
         const payload = getCallbackPayload(userId, data);
         if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
-        return showFzrOfferList(ctx, payload.categoryId, "Instant", payload.productCategoryId, payload.label);
+        return showFzrOfferList(ctx, payload.productCategoryId, "Instant", payload.productCategoryId, payload.label);
     }
 
     if (data.startsWith("fo")) {
