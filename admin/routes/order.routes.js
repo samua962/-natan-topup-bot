@@ -1,8 +1,22 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
-const { createTopupOrder, createTelegramStarsOrder, createTelegramPremiumOrder } = require("../../services/fzr");
+const { getTopupOffers, createTopupOrder, createTelegramStarsOrder, createTelegramPremiumOrder } = require("../../services/fzr");
 const axios = require("axios");
+
+async function resolveFzrOffer(order, config) {
+  const categoryId = config.category_id || order.external_product_id;
+  let offerId = config.offer_id || order.product_id;
+  const data = await getTopupOffers(categoryId);
+  const offers = Array.isArray(data.offers) ? data.offers : [];
+  if (offers.some((offer) => String(offer.offer_id) === String(offerId))) return { categoryId, offerId };
+  const productName = String(order.product_name || "").toLowerCase().trim();
+  const match = offers.find((offer) => {
+    const name = String(offer.name || "").toLowerCase().trim();
+    return name === productName || name.includes(productName) || productName.includes(name);
+  });
+  return { categoryId, offerId: match?.offer_id || offerId };
+}
 
 
 // 📥 GET ALL ORDERS
@@ -34,6 +48,7 @@ router.post("/:id/approve", async (req, res) => {
   if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
     let fzrProduct = {};
     try { fzrProduct = JSON.parse(order.external_product_id || "{}"); } catch (_) { }
+    if (order.delivery_type === "fzr") fzrProduct = await resolveFzrOffer(order, fzrProduct);
     const result = order.delivery_type === "fzr"
       ? await createTopupOrder(fzrProduct.category_id || order.external_product_id, fzrProduct.offer_id || order.product_id, { player_id: order.player_id })
       : fzrProduct.type === "telegram_stars"
@@ -69,6 +84,7 @@ router.post("/:id/complete", async (req, res) => {
   if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
     let fzrProduct = {};
     try { fzrProduct = JSON.parse(order.external_product_id || "{}"); } catch (_) { }
+    if (order.delivery_type === "fzr") fzrProduct = await resolveFzrOffer(order, fzrProduct);
     const result = order.delivery_type === "fzr"
       ? await createTopupOrder(fzrProduct.category_id || order.external_product_id, fzrProduct.offer_id || order.product_id, { player_id: order.player_id })
       : fzrProduct.type === "telegram_stars"

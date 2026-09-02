@@ -800,8 +800,27 @@ function parseFzrOrderProduct(order) {
     }
 }
 
+async function resolveStoredFzrProduct(order) {
+    const parsed = parseFzrOrderProduct(order);
+    let categoryId = parsed.categoryId;
+    let offerId = parsed.offerId;
+    if (!categoryId) return parsed;
+
+    const offersData = await getTopupOffers(categoryId);
+    const offers = Array.isArray(offersData.offers) ? offersData.offers : [];
+    const exactOffer = offers.find((offer) => String(offer.offer_id || "") === String(offerId || ""));
+    if (exactOffer) return { categoryId, offerId: exactOffer.offer_id };
+
+    const productName = String(order.product_name || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const matchingOffer = offers.find((offer) => {
+        const offerName = String(offer.name || "").toLowerCase().replace(/\s+/g, " ").trim();
+        return offerName === productName || offerName.includes(productName) || productName.includes(offerName);
+    });
+    return { categoryId, offerId: matchingOffer?.offer_id || offerId };
+}
+
 async function deliverStoredInstantOrder(order) {
-    const product = parseFzrOrderProduct(order);
+    const product = order.delivery_type === "fzr" ? await resolveStoredFzrProduct(order) : parseFzrOrderProduct(order);
     const fields = parseUserInputs(order.user_inputs) || {};
     if (order.delivery_type === "fzr") {
         fields.player_id = fields.player_id || order.player_id;
@@ -1552,10 +1571,10 @@ async function processWalletPayment(ctx, productInfo) {
     if (isInstant) {
         const orderRes = await db.query(
             `INSERT INTO orders 
-            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id)
-            VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7)
+            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id, user_inputs)
+            VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7, $8)
             RETURNING id`,
-            [userId, ctx.from.username || null, productInfo.name, productInfo.price, productInfo.type === "fzr_topup" ? "fzr" : "telegram", productInfo.type === "fzr_topup" ? JSON.stringify({ category_id: productInfo.categoryId, offer_id: productInfo.offerId }) : JSON.stringify({ type: productInfo.product_type, value: productInfo.offerId }), productInfo.playerId]
+            [userId, ctx.from.username || null, productInfo.name, productInfo.price, productInfo.type === "fzr_topup" ? "fzr" : "telegram", productInfo.type === "fzr_topup" ? JSON.stringify({ category_id: productInfo.categoryId, offer_id: productInfo.offerId }) : JSON.stringify({ type: productInfo.product_type, value: productInfo.offerId }), productInfo.playerId, JSON.stringify(productInfo.userInputs || {})]
         );
         const orderId = orderRes.rows[0].id;
 

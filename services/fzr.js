@@ -150,11 +150,19 @@ async function createTopupOrder(categoryId, offerId, fields = {}) {
     };
   }
 
+  const normalizedCategoryId = String(categoryId || "").trim();
+  const normalizedOfferId = String(offerId || "").trim();
+  if (!normalizedCategoryId || !normalizedOfferId) {
+    return { success: false, error: "Missing FZR category_id or offer_id" };
+  }
+
   const payload = {
-    category_id: categoryId,
-    offer_id: offerId,
+    category_id: normalizedCategoryId,
+    offer_id: normalizedOfferId,
     fields,
   };
+
+  console.log(`[FZR] POST /topups/order category_id=${normalizedCategoryId} offer_id=${normalizedOfferId}`);
 
   const res = await fzrPost("/topups/order", payload);
 
