@@ -21,6 +21,18 @@ const userState = {};
 const processingOrders = new Set();
 const userHistory = {};
 
+function storeCallbackPayload(userId, prefix, payload) {
+    if (!userState[userId]) userState[userId] = {};
+    if (!userState[userId].callbackPayloads) userState[userId].callbackPayloads = {};
+    const token = `${prefix}${Math.random().toString(36).slice(2, 9)}`;
+    userState[userId].callbackPayloads[token] = payload;
+    return token;
+}
+
+function getCallbackPayload(userId, token) {
+    return userState[userId]?.callbackPayloads?.[token] || null;
+}
+
 // =====================
 // 🟢 HELPER: PARSE USER INPUTS (safe for JSONB)
 // =====================
@@ -1335,7 +1347,7 @@ async function showPaymentOptions(ctx, productInfo) {
     // Add Wallet Payment option
     buttons.push([{
         text: `👛 Wallet Payment (${balance} ETB)`,
-        callback_data: `unified_pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
+        callback_data: storeCallbackPayload(userId, "pw", { productInfo })
     }]);
 
     // Add all bank transfer methods
@@ -1344,7 +1356,7 @@ async function showPaymentOptions(ctx, productInfo) {
             buttons.push([
                 {
                     text: m.name,
-                    callback_data: `unified_payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
+                    callback_data: storeCallbackPayload(userId, "pm", { productInfo, methodIndex: idx })
                 }
             ]);
         });
@@ -1375,7 +1387,7 @@ async function showBankTransferMethods(ctx, productInfo) {
     userState[userId].productInfo = productInfo;
 
     const buttons = methods.map((m, idx) => [
-        { text: m.name, callback_data: `payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
+        { text: m.name, callback_data: storeCallbackPayload(userId, "pm", { productInfo, methodIndex: idx }) },
     ]);
     buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
@@ -2173,7 +2185,11 @@ async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
 
     const buttons = buildButtons(items.map((item) => ({
         text: item.label,
-        callback_data: `fzr_topup_${categoryId}_${item.id}_${encodeURIComponent(item.label)}`,
+        callback_data: storeCallbackPayload(ctx.from.id, "fc", {
+            categoryId,
+            productCategoryId: item.id,
+            label: item.label,
+        }),
     })));
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
     buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
@@ -2224,17 +2240,24 @@ async function showTelegramOfferList(ctx, type) {
         }
 
         const buttons = presets.map((value) => {
+            const price = pricePerStar * value;
             return {
                 text: `${value} Stars`,
-                callback_data: `telegram_offer_stars_${encodeURIComponent("Telegram Stars")}_${value}`,
+                callback_data: storeCallbackPayload(ctx.from.id, "ts", {
+                    kind: "stars",
+                    label: "Telegram Stars",
+                    value,
+                    priceUsd: price,
+                }),
             };
         });
 
         const pricedButtons = [];
         for (const button of buttons) {
-            const value = Number(button.callback_data.split("_").at(-1));
-            const price = await calculateFzrPrice(pricePerStar * value, "telegram_stars", "Telegram Stars");
-            pricedButtons.push({ ...button, text: `${value} Stars - ${price} ETB`, callback_data: `${button.callback_data}_${price}` });
+            const payload = getCallbackPayload(ctx.from.id, button.callback_data);
+            const price = await calculateFzrPrice(payload.priceUsd, "telegram_stars", "Telegram Stars");
+            payload.priceEtb = price;
+            pricedButtons.push({ ...button, text: `${payload.value} Stars - ${price} ETB` });
         }
 
         const rows = buildButtons(pricedButtons);
@@ -2258,7 +2281,12 @@ async function showTelegramOfferList(ctx, type) {
         const label = String(item.name || `Telegram Premium ${value} months`);
         buttons.push({
             text: `${label} - ${etb} ETB`,
-            callback_data: `telegram_offer_premium_${encodeURIComponent(label)}_${value}_${etb}`,
+            callback_data: storeCallbackPayload(ctx.from.id, "tp", {
+                kind: "premium",
+                label,
+                value,
+                priceEtb: etb,
+            }),
         });
     }
 
@@ -2294,7 +2322,13 @@ async function showFzrOfferList(ctx, categoryId, categoryName, productCategoryId
         const label = String(offer.name || offer.title || offer.label || offer.offer_name || `Offer ${offer.offer_id || offer.id || ""}`);
         buttons.push({
             text: `${label} - ${etb} ETB`,
-            callback_data: `fzr_offer_${categoryId}_${productCategoryId}_${encodeURIComponent(label)}_${encodeURIComponent(String(offer.offer_id || offer.id || offer.offer_code || ""))}_${etb}`,
+            callback_data: storeCallbackPayload(ctx.from.id, "fo", {
+                categoryId,
+                productCategoryId,
+                offerId: String(offer.offer_id || offer.id || offer.offer_code || ""),
+                label,
+                priceEtb: etb,
+            }),
         });
     }
 
@@ -2583,6 +2617,69 @@ bot.on("callback_query", async (ctx) => {
         return;
     }
 
+    if (data.startsWith("fc")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
+        return showFzrOfferList(ctx, payload.categoryId, "Instant", payload.productCategoryId, payload.label);
+    }
+
+    if (data.startsWith("fo")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the product list again.");
+        state.product = {
+            productId: payload.productCategoryId,
+            categoryId: payload.categoryId,
+            offerId: payload.offerId,
+            price: payload.priceEtb,
+            name: payload.label,
+            type: "fzr_topup",
+            product_type: "topup",
+            fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: "topup" },
+        };
+        state.step = "PLAYER";
+        return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+    }
+
+    if (data.startsWith("ts") || data.startsWith("tp")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the Telegram list again.");
+        state.product = {
+            productId: payload.kind,
+            categoryId: payload.kind,
+            offerId: payload.value,
+            price: payload.priceEtb,
+            name: payload.label,
+            type: "telegram_service",
+            product_type: payload.kind === "stars" ? "telegram_stars" : "telegram_premium",
+            fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: payload.kind === "stars" ? "telegram_stars" : "telegram_premium" },
+        };
+        state.step = "PLAYER";
+        return ctx.reply("👤 Enter your Telegram username or phone number:\n\nExample: @username\n\nType /cancel to cancel", { parse_mode: "HTML" });
+    }
+
+    if (data.startsWith("pw")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload?.productInfo) return ctx.reply("⚠️ This payment menu has expired. Please open it again.");
+        await processWalletPayment(ctx, {
+            ...payload.productInfo,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            userInputs: state.collectedData,
+        });
+        return;
+    }
+
+    if (data.startsWith("pm")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload?.productInfo) return ctx.reply("⚠️ This payment menu has expired. Please open it again.");
+        const methods = await getPaymentMethods();
+        const selectedMethod = methods[Number(payload.methodIndex)];
+        if (!selectedMethod) return ctx.reply("❌ Payment method not found.");
+        userState[userId].productInfo = payload.productInfo;
+        await showPaymentDetails(ctx, selectedMethod, payload.productInfo);
+        return;
+    }
+
     if (data.startsWith("fzr_topup_")) {
         const parts = data.split("_");
         const categoryId = parts[2];
@@ -2710,6 +2807,8 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("pay_wallet_")) {
         const productInfo = {
             productId: state.product.productId,
+            categoryId: state.product.categoryId,
+            offerId: state.product.offerId,
             price: state.product.price,
             name: state.product.name,
             playerId: state.playerId,
@@ -2750,6 +2849,8 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("unified_pay_wallet_")) {
         const productInfo = {
             productId: state.product.productId,
+            categoryId: state.product.categoryId,
+            offerId: state.product.offerId,
             price: state.product.price,
             name: state.product.name,
             playerId: state.playerId,
@@ -2824,6 +2925,8 @@ bot.on("callback_query", async (ctx) => {
             state.step = "PAYMENT_METHOD_SELECTION";
             const productInfo = {
                 productId: state.product.productId,
+                categoryId: state.product.categoryId,
+                offerId: state.product.offerId,
                 price: state.product.price,
                 name: state.product.name,
                 playerId: state.playerId,
