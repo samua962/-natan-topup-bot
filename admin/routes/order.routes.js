@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
-const { createTopupOrder } = require("../../services/fzr");
+const { createTopupOrder, createTelegramStarsOrder, createTelegramPremiumOrder } = require("../../services/fzr");
 const axios = require("axios");
 
 
@@ -31,12 +31,14 @@ router.post("/:id/approve", async (req, res) => {
   );
 
   // 🔥 INSTANT DELIVERY
-  if (order.delivery_type === "fzr") {
-    const result = await createTopupOrder(
-      order.external_product_id,
-      order.offer_id || order.product_id,
-      { player_id: order.player_id }
-    );
+  if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
+    let fzrProduct = {};
+    try { fzrProduct = JSON.parse(order.external_product_id || "{}"); } catch (_) { }
+    const result = order.delivery_type === "fzr"
+      ? await createTopupOrder(fzrProduct.category_id || order.external_product_id, fzrProduct.offer_id || order.product_id, { player_id: order.player_id })
+      : fzrProduct.type === "telegram_stars"
+        ? await createTelegramStarsOrder(order.player_id, fzrProduct.value)
+        : await createTelegramPremiumOrder(order.player_id, fzrProduct.value);
 
     if (result.success) {
       await db.query(

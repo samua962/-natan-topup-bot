@@ -788,6 +788,18 @@ async function calculateFzrPrice(usdPrice, categoryId = "", categoryName = "") {
     return Math.max(10, Math.round((usd * (1 + margin / 100) * exchangeRate) / 10) * 10);
 }
 
+function parseFzrOrderProduct(order) {
+    try {
+        const parsed = JSON.parse(order.external_product_id || "{}");
+        return {
+            categoryId: parsed.category_id || parsed.categoryId || parsed.type || order.external_product_id,
+            offerId: parsed.offer_id || parsed.offerId || parsed.value || order.product_id,
+        };
+    } catch (_) {
+        return { categoryId: order.external_product_id, offerId: order.product_id };
+    }
+}
+
 // =====================
 // 🟢 BUILD USER CREDENTIALS (for admin notifications)
 // Returns a string with all user-submitted credentials/inputs
@@ -1522,7 +1534,7 @@ async function processWalletPayment(ctx, productInfo) {
             (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id)
             VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7)
             RETURNING id`,
-            [userId, ctx.from.username || null, productInfo.name, productInfo.price, productInfo.type === "fzr_topup" ? "fzr" : "telegram", productInfo.productId, productInfo.playerId]
+            [userId, ctx.from.username || null, productInfo.name, productInfo.price, productInfo.type === "fzr_topup" ? "fzr" : "telegram", productInfo.type === "fzr_topup" ? JSON.stringify({ category_id: productInfo.categoryId, offer_id: productInfo.offerId }) : JSON.stringify({ type: productInfo.product_type, value: productInfo.offerId }), productInfo.playerId]
         );
         const orderId = orderRes.rows[0].id;
 
@@ -2128,8 +2140,8 @@ async function showProductsByCategory(ctx, categoryId) {
     }
 }
 
-function getFzrTopupCategoryName(categoryName) {
-    const name = String(categoryName || "").toLowerCase();
+function getFzrTopupCategoryName(categoryName, categoryId = "") {
+    const name = `${String(categoryName || "")} ${String(categoryId || "")}`.toLowerCase();
     if (name.includes("pubg")) return "pubg";
     if (name.includes("free fire") || name.includes("free_fire") || name.includes("freefire")) return "free_fire";
     if (name.includes("delta")) return "delta_force";
@@ -2167,7 +2179,7 @@ async function getFzrTopupMenuForCategory(categoryName) {
 }
 
 async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
-    const key = getFzrTopupCategoryName(categoryName);
+    const key = getFzrTopupCategoryName(categoryName, categoryId);
 
     if (key === "pubg") {
         return showPubgGameMenu(ctx, categoryId, categoryName);
@@ -2586,7 +2598,7 @@ bot.on("callback_query", async (ctx) => {
         const category = categoryResult.rows[0];
         if (!category) return ctx.reply("❌ Category not found.");
 
-        const categoryKey = getFzrTopupCategoryName(category.name || category.display_name);
+        const categoryKey = getFzrTopupCategoryName(category.name || category.display_name, category.id);
         if (categoryKey) {
             pushHistory(userId, "categories");
             return showFzrTopupCategoryMenu(ctx, category.name || category.display_name, categoryId);
@@ -3036,9 +3048,12 @@ bot.on("callback_query", async (ctx) => {
             }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
-            if (order.delivery_type === "fzr") {
-                const validation = await validateFzrPlayer(order.external_product_id, order.player_id);
-                if (!validation || !validation.success) {
+            if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
+                const fzrProduct = parseFzrOrderProduct(order);
+                const validation = order.delivery_type === "fzr"
+                    ? await validateFzrPlayer(fzrProduct.categoryId, order.player_id)
+                    : { success: true };
+                if (validation && !validation.success) {
                     try { await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED (Validation Failed)\n❌ Auto-delivery unavailable. Please deliver manually.\n\n👇 Click "Complete" after manual delivery`;
@@ -3049,7 +3064,11 @@ bot.on("callback_query", async (ctx) => {
                     } catch (e) { console.error("Edit message error (approve order - validation failed):", e.message); }
                     return;
                 }
-                const result = await createTopupOrder(order.external_product_id, order.offer_id || order.product_id, { player_id: order.player_id });
+                const result = order.delivery_type === "fzr"
+                    ? await createTopupOrder(fzrProduct.categoryId, fzrProduct.offerId, { player_id: order.player_id })
+                    : fzrProduct.categoryId === "telegram_stars"
+                        ? await createTelegramStarsOrder(order.player_id, fzrProduct.offerId)
+                        : await createTelegramPremiumOrder(order.player_id, fzrProduct.offerId);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
                     try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
@@ -3346,13 +3365,17 @@ bot.on("text", async (ctx) => {
         if (state.playerId && !extractedPlayerId) { extractedPlayerId = state.playerId; extractedPlayerName = state.playerName || null; }
 
         const productIdToInsert = product.type === "database" ? product.productId : null;
-            const externalProductId = product.type === "fzr_topup" ? product.productId : null;
+        const externalProductId = product.type === "fzr_topup"
+            ? JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId })
+            : product.type === "telegram_service"
+                ? JSON.stringify({ type: product.product_type, value: product.offerId })
+                : null;
 
         const orderResult = await db.query(
             `INSERT INTO orders (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, delivery_type, status, payment_method, transaction_id, player_id, player_name, user_inputs)
              VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10, $11, $12) RETURNING id, created_at`,
             [userId, ctx.from.username || null, productIdToInsert, externalProductId,
-                product.name, product.price, "manual", method.name,
+                product.name, product.price, product.type === "fzr_topup" ? "fzr" : product.type === "telegram_service" ? "telegram" : "manual", method.name,
                 transferId, extractedPlayerId || null, extractedPlayerName || null,
                 JSON.stringify(userInputs)]
         );
@@ -4421,7 +4444,7 @@ bot.on("photo", async (ctx) => {
             let externalProductId = null;
             if (product.type === "fzr_topup") {
                 productIdToInsert = null;
-                externalProductId = product.productId;
+                externalProductId = JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId });
             } else {
                 productIdToInsert = product.productId;
                 externalProductId = null;

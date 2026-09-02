@@ -325,7 +325,7 @@ async function handlePaymentVerified(data, deliveryId) {
     if (pendingOrder) {
         console.log(`✅ Found pending order #${pendingOrder.id}`);
 
-        const isInstant = pendingOrder.delivery_type === "fzr";
+        const isInstant = pendingOrder.delivery_type === "fzr" || pendingOrder.delivery_type === "telegram";
 
         const bot = await getBot();
 
@@ -334,12 +334,14 @@ async function handlePaymentVerified(data, deliveryId) {
 
             // Try FZR delivery if service is available
             try {
-                const { createTopupOrder } = require("../../services/fzr");
-                const fzrResult = await createTopupOrder(
-                    pendingOrder.external_product_id,
-                    pendingOrder.offer_id || pendingOrder.product_id,
-                    { player_id: pendingOrder.player_id }
-                );
+                const { createTopupOrder, createTelegramStarsOrder, createTelegramPremiumOrder } = require("../../services/fzr");
+                let fzrProduct = {};
+                try { fzrProduct = JSON.parse(pendingOrder.external_product_id || "{}"); } catch (_) { }
+                const fzrResult = pendingOrder.delivery_type === "fzr"
+                    ? await createTopupOrder(fzrProduct.category_id || pendingOrder.external_product_id, fzrProduct.offer_id || pendingOrder.product_id, { player_id: pendingOrder.player_id })
+                    : fzrProduct.type === "telegram_stars"
+                        ? await createTelegramStarsOrder(pendingOrder.player_id, fzrProduct.value)
+                        : await createTelegramPremiumOrder(pendingOrder.player_id, fzrProduct.value);
 
                 if (fzrResult && fzrResult.success) {
                     fzrDelivered = true;
