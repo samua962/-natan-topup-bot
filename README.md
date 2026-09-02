@@ -400,15 +400,12 @@ Auto-Approve or Manual Review
 4. Push to branch (`git push origin feature/AmazingFeature`)
 5. Open Pull Request
 
-
-
 ## 💬 Support
 
 **Need Help?**
 
 - 📧 Email: samueltesfaye228@gmail.com
 - 💬 Telegram: @sam_tes962(https://t.me/sam_tes962)
-
 
 ## 🙏 Acknowledgments
 
