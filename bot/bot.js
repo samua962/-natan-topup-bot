@@ -2204,7 +2204,7 @@ async function getFzrTopupMenuForCategory(categoryName) {
 
     const filterMap = {
         pubg: (value) => /pubg/i.test(value) && /(pubg_mobile_auto|auto|uc|wow|special|pack|battle|mobile)/i.test(value),
-        free_fire: (value) => /free fire|free_fire|garena/i.test(value),
+        free_fire: (value) => /free fire|free_fire|garena/i.test(value) && /free_fire_(latam|mena)/i.test(value),
         delta_force: (value) => /delta.*force/i.test(value),
         blood_strike: (value) => /blood.*strike/i.test(value),
         telegram: (value) => /telegram/i.test(value),
