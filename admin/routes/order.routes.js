@@ -63,6 +63,20 @@ router.post("/:id/reject", async (req, res) => {
 
 // 🎯 COMPLETE MANUAL
 router.post("/:id/complete", async (req, res) => {
+  const order = (await db.query("SELECT * FROM orders WHERE id=$1", [req.params.id])).rows[0];
+  if (!order) return res.status(404).json({ error: "Not found" });
+
+  if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
+    let fzrProduct = {};
+    try { fzrProduct = JSON.parse(order.external_product_id || "{}"); } catch (_) { }
+    const result = order.delivery_type === "fzr"
+      ? await createTopupOrder(fzrProduct.category_id || order.external_product_id, fzrProduct.offer_id || order.product_id, { player_id: order.player_id })
+      : fzrProduct.type === "telegram_stars"
+        ? await createTelegramStarsOrder(order.player_id, fzrProduct.value)
+        : await createTelegramPremiumOrder(order.player_id, fzrProduct.value);
+    if (!result.success) return res.status(502).json({ error: result.error || "Instant delivery failed" });
+  }
+
   await db.query(
     "UPDATE orders SET status='COMPLETED' WHERE id=$1",
     [req.params.id]

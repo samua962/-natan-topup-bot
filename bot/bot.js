@@ -800,6 +800,27 @@ function parseFzrOrderProduct(order) {
     }
 }
 
+async function deliverStoredInstantOrder(order) {
+    const product = parseFzrOrderProduct(order);
+    const fields = parseUserInputs(order.user_inputs) || {};
+    if (order.delivery_type === "fzr") {
+        fields.player_id = fields.player_id || order.player_id;
+        if (!product.categoryId || !product.offerId || !fields.player_id) {
+            return { success: false, error: "Missing FZR category, offer, or player ID" };
+        }
+        console.log(`[FZR] Delivering order #${order.id}: category=${product.categoryId}, offer=${product.offerId}, player=${fields.player_id}`);
+        return createTopupOrder(product.categoryId, product.offerId, fields);
+    }
+    if (order.delivery_type === "telegram") {
+        const username = order.player_id || fields.telegram_username || fields.username;
+        if (!username || !product.offerId) return { success: false, error: "Missing Telegram username or plan value" };
+        return product.categoryId === "telegram_stars"
+            ? createTelegramStarsOrder(username, product.offerId)
+            : createTelegramPremiumOrder(username, product.offerId);
+    }
+    return { success: false, error: "Order is not an instant provider order" };
+}
+
 // =====================
 // 🟢 BUILD USER CREDENTIALS (for admin notifications)
 // Returns a string with all user-submitted credentials/inputs
@@ -1559,11 +1580,11 @@ async function processWalletPayment(ctx, productInfo) {
             setTimeout(() => showMainMenu(ctx), 2000);
         } else {
             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending manual delivery.\n\nYou will be notified when completed.`, []);
+            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} is queued for instant delivery retry.\n\nYou will be notified as soon as the provider completes it.`, []);
             await ctx.telegram.sendMessage(
                 process.env.ADMIN_ID,
-                `🟡 WALLET PURCHASE (PENDING MANUAL DELIVERY)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ Auto-delivery failed. Please complete manually.`,
-                { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
+                `🔴 WALLET PURCHASE (INSTANT DELIVERY RETRY REQUIRED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ FZR rejected or could not process the order.`,
+                { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Instant Delivery", callback_data: `retry_instant_${orderId}` }]] } }
             );
             setTimeout(() => showMainMenu(ctx), 3000);
         }
@@ -3064,11 +3085,7 @@ bot.on("callback_query", async (ctx) => {
                     } catch (e) { console.error("Edit message error (approve order - validation failed):", e.message); }
                     return;
                 }
-                const result = order.delivery_type === "fzr"
-                    ? await createTopupOrder(fzrProduct.categoryId, fzrProduct.offerId, { player_id: order.player_id })
-                    : fzrProduct.categoryId === "telegram_stars"
-                        ? await createTelegramStarsOrder(order.player_id, fzrProduct.offerId)
-                        : await createTelegramPremiumOrder(order.player_id, fzrProduct.offerId);
+                const result = await deliverStoredInstantOrder(order);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
                     try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
@@ -3110,6 +3127,24 @@ bot.on("callback_query", async (ctx) => {
     }
 
     // ----- ADMIN: COMPLETE ORDER -----
+    if (data.startsWith("retry_instant_")) {
+        const orderId = data.split("_")[2];
+        const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
+        if (!order || (order.delivery_type !== "fzr" && order.delivery_type !== "telegram")) {
+            return ctx.reply("❌ Instant order not found.");
+        }
+        try {
+            const result = await deliverStoredInstantOrder(order);
+            if (!result.success) throw new Error(result.error || "Provider rejected the order");
+            await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
+            await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" });
+            return ctx.reply(`✅ Instant delivery completed for order #${orderId}.`);
+        } catch (error) {
+            console.error(`Instant retry failed for order #${orderId}:`, error.message);
+            return ctx.reply(`❌ Instant delivery failed: ${error.message}`);
+        }
+    }
+
     if (data.startsWith("complete_")) {
         const orderId = data.split("_")[1];
         if (processingOrders.has(`complete_${orderId}`)) {
@@ -3126,6 +3161,13 @@ bot.on("callback_query", async (ctx) => {
                 return;
             }
             let orderDetails = buildOrderDetails(order);
+            if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
+                const result = await deliverStoredInstantOrder(order);
+                if (!result.success) {
+                    processingOrders.delete(`complete_${orderId}`);
+                    return ctx.reply(`❌ Product was not delivered. Provider error: ${result.error || "Unknown error"}\n\nUse Retry Instant Delivery after correcting the order data.`);
+                }
+            }
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
             try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
             processingOrders.delete(`complete_${orderId}`);
