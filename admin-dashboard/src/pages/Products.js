@@ -430,7 +430,7 @@ export default function Products() {
                   onChange={handleChange}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
                 >
-                  <option value="uc_instant">⚡ UC Instant (PUBG - Ragner API)</option>
+                  <option value="uc_instant">⚡ UC Instant (PUBG - FZR API)</option>
                   <option value="uc_manual">📦 UC Manual (PUBG)</option>
                   <option value="grospack">🎁 Grospack (PUBG)</option>
                   <option value="subscription">👑 Subscription (PUBG)</option>

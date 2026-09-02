@@ -325,24 +325,24 @@ async function handlePaymentVerified(data, deliveryId) {
     if (pendingOrder) {
         console.log(`✅ Found pending order #${pendingOrder.id}`);
 
-        const isInstant = pendingOrder.delivery_type === "ragner" ||
-            (pendingOrder.external_product_id && pendingOrder.delivery_type === "ragner");
+        const isInstant = pendingOrder.delivery_type === "fzr";
 
         const bot = await getBot();
 
         if (isInstant) {
-            let ragnerDelivered = false;
+            let fzrDelivered = false;
 
-            // Try Ragner delivery if service is available
+            // Try FZR delivery if service is available
             try {
-                const { createOrder } = require("../../services/ragner");
-                const ragnerResult = await createOrder(
+                const { createTopupOrder } = require("../../services/fzr");
+                const fzrResult = await createTopupOrder(
                     pendingOrder.external_product_id,
-                    pendingOrder.player_id
+                    pendingOrder.offer_id || pendingOrder.product_id,
+                    { player_id: pendingOrder.player_id }
                 );
 
-                if (ragnerResult && ragnerResult.success) {
-                    ragnerDelivered = true;
+                if (fzrResult && fzrResult.success) {
+                    fzrDelivered = true;
                     await db.query(
                         `UPDATE orders SET status = 'COMPLETED', verified_by_shegerpay = true WHERE id = $1`,
                         [pendingOrder.id]
@@ -368,7 +368,7 @@ async function handlePaymentVerified(data, deliveryId) {
                                 `📦 Product: ${pendingOrder.product_name}\n` +
                                 `💰 Amount: ${pendingOrder.price_etb} ETB\n` +
                                 `🧾 Transaction ID: ${txId}\n` +
-                                `🎮 Auto-delivered via Ragner\n` +
+                                `🎮 Auto-delivered via FZR\n` +
                                 `🔑 Delivery ID: ${deliveryId || 'N/A'}`
                             );
                         } catch (err) {
@@ -376,12 +376,12 @@ async function handlePaymentVerified(data, deliveryId) {
                         }
                     }
                 }
-            } catch (ragnerError) {
-                console.error("Ragner delivery failed:", ragnerError.message);
+            } catch (fzrError) {
+                console.error("FZR delivery failed:", fzrError.message);
                 // Fall through to manual approval
             }
 
-            if (!ragnerDelivered) {
+            if (!fzrDelivered) {
                 // Mark as approved, requires manual delivery
                 await db.query(
                     `UPDATE orders SET status = 'APPROVED', verified_by_shegerpay = true WHERE id = $1`,

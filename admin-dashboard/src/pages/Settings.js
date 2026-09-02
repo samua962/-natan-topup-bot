@@ -6,9 +6,8 @@ export default function Settings() {
   const [rate, setRate] = useState("");
   const [bannerUrl, setBannerUrl] = useState("");
   const [paymentMethods, setPaymentMethods] = useState([]);
-  const [profitMargins, setProfitMargins] = useState({ ranges: [] });
+  const [profitMargins, setProfitMargins] = useState({ categories: [] });
   const [loading, setLoading] = useState(false);
-  const [newMargin, setNewMargin] = useState({ min_usd: "", max_usd: "", margin: "", name: "" });
   const [newMethod, setNewMethod] = useState({ 
     name: "", 
     account_number: "", 
@@ -43,13 +42,36 @@ export default function Settings() {
       }
       const marginRes = res.data.find(s => s.key === "profit_margins");
       if (marginRes?.value) {
-        setProfitMargins(JSON.parse(marginRes.value));
+        const savedMargins = JSON.parse(marginRes.value);
+        if (Array.isArray(savedMargins.categories)) {
+          setProfitMargins(savedMargins);
+        } else if (Array.isArray(savedMargins.ranges)) {
+          setProfitMargins({ categories: [{ key: "default", name: "Default", ranges: savedMargins.ranges }] });
+        }
       } else {
         setProfitMargins({
-          ranges: [
-            { min_usd: 0.99, max_usd: 4.99, margin: 15, name: "Small UC" },
-            { min_usd: 5.00, max_usd: 19.99, margin: 10, name: "Medium UC" },
-            { min_usd: 20.00, max_usd: 999.99, margin: 7, name: "Large UC" }
+          categories: [
+            { key: "pubg_mobile_auto", name: "PUBG Mobile Auto", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "free_fire_latam", name: "Free Fire LATAM", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "free_fire_mena", name: "Free Fire MENA", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "delta_force", name: "Delta Force", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "blood_strike", name: "Blood Strike", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "mobile_legends_global", name: "Mobile Legends Global", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "arena_breakout", name: "Arena Breakout", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "bigo_live", name: "Bigo Live", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "poppo_live", name: "Poppo Live", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "pubg_new_state", name: "PUBG: New State", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "app_store_itunes_us", name: "iTunes / App Store (US)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "pubg_mobile_gift", name: "PUBG Mobile Gift Card", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "garena_free_fire_global", name: "Free Fire Vouchers (Global)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "roblox_global", name: "Roblox (Global)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "playstation_us", name: "PlayStation Network (US)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "steam_wallet_us", name: "Steam Wallet (US)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "fortnite", name: "Fortnite V-Bucks", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "google_play_us", name: "Google Play (US)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "mobile_legends_voucher_global", name: "Mobile Legends Vouchers (Global)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "steam_wallet_global", name: "Steam Wallet (Global)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
+            { key: "xbox_gift_card_us", name: "Xbox Game Pass (US)", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }, { min_usd: 5, max_usd: 15, margin: 12 }, { min_usd: 15, max_usd: 999, margin: 10 }] },
           ]
         });
       }
@@ -163,33 +185,6 @@ export default function Settings() {
       alert("Failed to save profit margins");
     }
     setLoading(false);
-  }
-
-  function addProfitMargin() {
-    if (!newMargin.min_usd || !newMargin.max_usd || !newMargin.margin || !newMargin.name) {
-      alert("All fields are required");
-      return;
-    }
-    setProfitMargins({
-      ranges: [...profitMargins.ranges, { 
-        min_usd: parseFloat(newMargin.min_usd), 
-        max_usd: parseFloat(newMargin.max_usd), 
-        margin: parseFloat(newMargin.margin),
-        name: newMargin.name
-      }]
-    });
-    setNewMargin({ min_usd: "", max_usd: "", margin: "", name: "" });
-  }
-
-  function updateProfitMargin(index, field, value) {
-    const updated = [...profitMargins.ranges];
-    updated[index][field] = parseFloat(value);
-    setProfitMargins({ ranges: updated });
-  }
-
-  function deleteProfitMargin(index) {
-    const updated = profitMargins.ranges.filter((_, i) => i !== index);
-    setProfitMargins({ ranges: updated });
   }
 
   async function addPaymentMethod() {
@@ -331,109 +326,34 @@ export default function Settings() {
           <p className="text-xs md:text-sm text-gray-500 mt-1">Configure profit margins based on USD price ranges</p>
         </div>
         
-        <div className="overflow-x-auto -mx-4 px-4">
-          <table className="min-w-[500px] w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Range Name</th>
-                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Min USD</th>
-                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Max USD</th>
-                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Margin</th>
-                <th className="px-3 md:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {profitMargins.ranges.map((range, index) => (
-                <tr key={index} className="hover:bg-gray-50">
-                  <td className="px-3 md:px-6 py-3">
-                    <input
-                      value={range.name}
-                      onChange={(e) => updateProfitMargin(index, "name", e.target.value)}
-                      className="w-full px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
-                    />
-                    </td>
-                  <td className="px-3 md:px-6 py-3">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={range.min_usd}
-                      onChange={(e) => updateProfitMargin(index, "min_usd", e.target.value)}
-                      className="w-20 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
-                    />
-                    </td>
-                  <td className="px-3 md:px-6 py-3">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={range.max_usd}
-                      onChange={(e) => updateProfitMargin(index, "max_usd", e.target.value)}
-                      className="w-20 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
-                    />
-                    </td>
-                  <td className="px-3 md:px-6 py-3">
-                    <input
-                      type="number"
-                      step="1"
-                      value={range.margin}
-                      onChange={(e) => updateProfitMargin(index, "margin", e.target.value)}
-                      className="w-16 px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-yellow-500 text-sm"
-                    />
-                    <span className="ml-1 text-xs text-gray-500">%</span>
-                    </td>
-                  <td className="px-3 md:px-6 py-3">
-                    <button onClick={() => deleteProfitMargin(index)} className="p-1 text-red-500">
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-            
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="p-4 md:p-6 border-t border-gray-100 bg-gray-50">
-          <h4 className="text-sm md:text-md font-medium text-gray-800 mb-3">Add New Price Range</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <input
-              type="text"
-              placeholder="Range Name"
-              value={newMargin.name}
-              onChange={(e) => setNewMargin({ ...newMargin, name: e.target.value })}
-              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
-            />
-            <input
-              type="number"
-              step="0.01"
-              placeholder="Min USD"
-              value={newMargin.min_usd}
-              onChange={(e) => setNewMargin({ ...newMargin, min_usd: e.target.value })}
-              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
-            />
-            <input
-              type="number"
-              step="0.01"
-              placeholder="Max USD"
-              value={newMargin.max_usd}
-              onChange={(e) => setNewMargin({ ...newMargin, max_usd: e.target.value })}
-              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
-            />
-            <input
-              type="number"
-              step="1"
-              placeholder="Margin (%)"
-              value={newMargin.margin}
-              onChange={(e) => setNewMargin({ ...newMargin, margin: e.target.value })}
-              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500 text-sm"
-            />
-          </div>
-          <button
-            onClick={addProfitMargin}
-            className="flex items-center mt-3 px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm"
-          >
-            <Plus size={16} className="mr-2" />
-            Add Range
-          </button>
+        <div className="p-4 md:p-6 space-y-3">
+          {profitMargins.categories.map((category, categoryIndex) => (
+            <div key={`${category.key}-${categoryIndex}`} className="border border-gray-200 rounded-lg overflow-hidden">
+              <button type="button" onClick={() => setExpandedCategory(expandedCategory === categoryIndex ? null : categoryIndex)} className="w-full px-3 py-3 flex items-center justify-between text-left hover:bg-gray-50">
+                <span className="font-medium text-sm text-gray-800">{category.name || category.key}</span>
+                <span className="text-xs text-gray-500">{category.key} · {category.ranges?.length || 0} tiers</span>
+              </button>
+              {expandedCategory === categoryIndex && (
+                <div className="border-t border-gray-200 p-3 space-y-3 bg-gray-50">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <input value={category.key} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, key: e.target.value } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Category key" />
+                    <input value={category.name || ""} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, name: e.target.value } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Display name" />
+                  </div>
+                  {(category.ranges || []).map((range, rangeIndex) => (
+                    <div key={rangeIndex} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+                      <input type="number" step="0.01" value={range.min_usd} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, ranges: c.ranges.map((r, j) => j === rangeIndex ? { ...r, min_usd: parseFloat(e.target.value) || 0 } : r) } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Min USD" />
+                      <input type="number" step="0.01" value={range.max_usd} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, ranges: c.ranges.map((r, j) => j === rangeIndex ? { ...r, max_usd: parseFloat(e.target.value) || 0 } : r) } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Max USD" />
+                      <input type="number" step="0.5" value={range.margin} onChange={(e) => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, ranges: c.ranges.map((r, j) => j === rangeIndex ? { ...r, margin: parseFloat(e.target.value) || 0 } : r) } : c) }))} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Margin %" />
+                      <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, ranges: c.ranges.filter((_, j) => j !== rangeIndex) } : c) }))} className="flex items-center justify-center gap-1 px-3 py-2 text-red-500 border border-red-200 rounded-lg text-sm"><Trash2 size={15} /> Remove</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: p.categories.map((c, i) => i === categoryIndex ? { ...c, ranges: [...(c.ranges || []), { min_usd: 0, max_usd: 999, margin: 10 }] } : c) }))} className="flex items-center gap-1 px-3 py-2 text-green-600 border border-green-200 rounded-lg text-sm"><Plus size={15} /> Add Tier</button>
+                  <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: p.categories.filter((_, i) => i !== categoryIndex) }))} className="flex items-center gap-1 px-3 py-2 text-red-600 border border-red-200 rounded-lg text-sm"><Trash2 size={15} /> Remove Category</button>
+                </div>
+              )}
+            </div>
+          ))}
+          <button type="button" onClick={() => setProfitMargins(p => ({ ...p, categories: [...p.categories, { key: "new_category", name: "New Category", ranges: [{ min_usd: 0, max_usd: 5, margin: 15 }] }] }))} className="flex items-center gap-1 px-3 py-2 text-blue-600 border border-blue-200 rounded-lg text-sm"><Plus size={15} /> Add Category</button>
         </div>
 
         <div className="p-4 md:p-6 border-t border-gray-100">

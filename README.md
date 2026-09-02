@@ -31,7 +31,7 @@ A powerful Telegram bot for selling in-game credits, digital products, and manag
 ### 🛍️ Product Management
 
 - **Multiple Product Categories**: Games, social media, digital services
-- **Instant Delivery**: Auto-delivery for PUBG UC via Ragner API
+- **Instant Delivery**: Auto-delivery for PUBG UC via FZR API
 - **Manual Delivery**: Admin-approved orders for complex products
 - **Wallet System**: Balance management with transaction history
 - **Price Calculator**: Dynamic pricing with profit margin calculations
@@ -104,7 +104,7 @@ A powerful Telegram bot for selling in-game credits, digital products, and manag
 | **Axios**               | HTTP client for API calls  |
 | **Google Cloud Vision** | OCR for receipt processing |
 | **ShegerPay API**       | Payment verification       |
-| **Ragner API**          | PUBG UC delivery           |
+| **FZR API**             | Instant top-up delivery    |
 
 ## 📦 Installation
 
@@ -115,7 +115,7 @@ A powerful Telegram bot for selling in-game credits, digital products, and manag
 - Google Cloud Vision API key
 - Telegram Bot Token
 - ShegerPay API credentials
-- Ragner API credentials
+- FZR API credentials
 
 ### Steps
 
@@ -171,7 +171,7 @@ DB_PASSWORD=your_password
 GOOGLE_GEMINI_API_KEY=your_google_cloud_vision_key
 SHEGERPAY_API_KEY=your_shegerpay_api_key
 SHEGERPAY_ENABLED=true
-RAGNER_API_KEY=your_ragner_api_key
+FZR_API_KEY=your_fzr_api_key
 
 # External Services
 EXCHANGE_RATE_API=usd_to_etb_rate_api_url
@@ -220,7 +220,7 @@ natan-topup-bot/
 │   ├── db.js                  # Database connection
 │   └── schema.sql             # Database schema
 ├── services/
-│   └── ragner.js              # Ragner API integration
+│   └── fzr.js                # FZR API integration
 ├── admin-dashboard/           # React admin interface
 ├── index.js                   # Application entry point
 ├── railway.json               # Railway.app config
@@ -291,11 +291,11 @@ Body: {
 - Multiple receipt format support
 - Multi-language recognition
 
-### Ragner API - PUBG UC Delivery
+### FZR API - Instant Top-up Delivery
 
 ```javascript
-POST https://ragnergiftcard.com/api/v1/orders
-Headers: X-API-KEY: {RAGNER_API_KEY}
+POST https://api.fzr.cards/api/v2/topups/order
+Headers: X-API-Key: {FZR_API_KEY}
 Body: {
   player_id: "123456789",
   uc_amount: 600
@@ -414,7 +414,7 @@ Auto-Approve or Manual Review
 
 - [Telegraf](https://telegraf.js.org/) - Telegram Bot Framework
 - [ShegerPay](https://shegerpay.com) - Payment Verification
-- [Ragner](https://ragnergiftcard.com) - PUBG UC Delivery
+- [FZR](https://fzr.cards) - Instant top-up delivery
 - [Google Cloud Vision](https://cloud.google.com/vision) - OCR Technology
 
 ---

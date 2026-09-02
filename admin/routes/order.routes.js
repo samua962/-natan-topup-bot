@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
-const { createOrder } = require("../../services/ragner");
+const { createTopupOrder } = require("../../services/fzr");
 const axios = require("axios");
 
 
@@ -31,10 +31,11 @@ router.post("/:id/approve", async (req, res) => {
   );
 
   // 🔥 INSTANT DELIVERY
-  if (order.delivery_type === "ragner" || order.external_product_id) {
-    const result = await createOrder(
+  if (order.delivery_type === "fzr") {
+    const result = await createTopupOrder(
       order.external_product_id,
-      order.player_id
+      order.offer_id || order.product_id,
+      { player_id: order.player_id }
     );
 
     if (result.success) {
