@@ -2964,7 +2964,7 @@ bot.on("callback_query", async (ctx) => {
 
         const item = {
             productId: payload.productCategoryId,
-            categoryId: payload.categoryId,
+            categoryId: payload.productCategoryId,
             offerId: payload.offerId,
             price: payload.priceEtb,
             name: payload.label,
@@ -3856,7 +3856,7 @@ bot.on("text", async (ctx) => {
             if (isInstant && externalProductId) {
                 // Attempt auto-delivery for instant products
                 try {
-                    const fzrResult = await createTopupOrder(product.productId, product.offerId, { player_id: extractedPlayerId });
+                    const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
                     if (fzrResult && fzrResult.success) {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         try {
@@ -4428,7 +4428,7 @@ bot.on("text", async (ctx) => {
 
         if (isInstant) {
             try {
-                const fzrResult = await createTopupOrder(product.productId, product.offerId, { player_id: extractedPlayerId });
+                const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
                 if (fzrResult && fzrResult.success) {
                     await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                     try {
@@ -5004,7 +5004,7 @@ bot.on("photo", async (ctx) => {
 
                     if (isInstant) {
                         try {
-                            const fzrResult = await createTopupOrder(product.productId, product.offerId, { player_id: extractedPlayerId });
+                            const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
                             if (fzrResult && fzrResult.success) {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
