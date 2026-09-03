@@ -3479,9 +3479,9 @@ bot.on("callback_query", async (ctx) => {
                 const result = await deliverStoredInstantOrder(order);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                    try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
+                    try { await ctx.telegram.sendMessage(order.telegram_id, "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
-                    const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 UC Delivered Successfully!`;
+                    const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n\nyour order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️`;
                     try {
                         if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
                         else await ctx.editMessageText(msg);
@@ -3884,7 +3884,7 @@ bot.on("text", async (ctx) => {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                                `✅ Payment verified!\n\n🎮 UC Delivered Successfully!\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}`,
+                                `✅ Payment verified!\n\nyour order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}`,
                                 { parse_mode: "HTML" });
                         } catch (e) { await ctx.reply(`✅ UC Delivered! Order #${orderId} completed.`, { parse_mode: "HTML" }); }
 
@@ -4456,7 +4456,7 @@ bot.on("text", async (ctx) => {
                     await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                            "✅ UC Delivered Successfully! (BOA payment verified)", { parse_mode: "HTML" });
+                            "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n\n(BOA payment verified)", { parse_mode: "HTML" });
                     } catch (e) { }
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                         `Order #${orderId} auto-completed (BOA verified)\n` +
@@ -5032,7 +5032,7 @@ bot.on("photo", async (ctx) => {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
                                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                        "🎮 UC Delivered Successfully! (Payment auto-verified via OCR)", { parse_mode: "HTML" });
+                                        "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n\n(Payment auto-verified via OCR)", { parse_mode: "HTML" });
                                 } catch (e) { }
                                 await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                                     `✅ Order #${orderId} auto-completed (Cloud Vision OCR)\n` +
