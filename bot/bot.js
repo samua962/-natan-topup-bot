@@ -1799,6 +1799,38 @@ Type /cancel to cancel.
     }
 }
 
+async function deliverInstantCartItems(productInfo, playerId) {
+    const cartItems = Array.isArray(productInfo?.cartItems) && productInfo.cartItems.length > 0
+        ? productInfo.cartItems
+        : [{
+            categoryId: productInfo?.categoryId,
+            offerId: productInfo?.offerId || productInfo?.productId,
+            quantity: 1,
+            name: productInfo?.name,
+        }];
+
+    const results = [];
+    for (const item of cartItems) {
+        const categoryId = item.categoryId || productInfo?.categoryId;
+        const offerId = item.offerId || item.productId || productInfo?.offerId || productInfo?.productId;
+        const quantity = Math.max(1, Number(item.quantity || 1));
+
+        if (!categoryId || !offerId) {
+            return { success: false, error: "Missing instant product category or offer information." };
+        }
+
+        for (let index = 0; index < quantity; index += 1) {
+            const result = await createTopupOrder(categoryId, offerId, { player_id: playerId });
+            results.push(result);
+            if (!result || result.success !== true) {
+                return { success: false, error: result?.error || "Instant delivery failed.", results };
+            }
+        }
+    }
+
+    return { success: true, results };
+}
+
 // =====================
 // 🟢 PROCESS WALLET PAYMENT
 // =====================
@@ -1828,7 +1860,7 @@ async function processWalletPayment(ctx, productInfo) {
 
         let deliveryResult;
         if (productInfo.type === "fzr_topup") {
-            deliveryResult = await createTopupOrder(productInfo.categoryId, productInfo.offerId || productInfo.productId, { player_id: productInfo.playerId });
+            deliveryResult = await deliverInstantCartItems(productInfo, productInfo.playerId);
         } else if (productInfo.type === "telegram_service") {
             deliveryResult = productInfo.product_type === "telegram_stars"
                 ? await createTelegramStarsOrder(productInfo.playerId || ctx.from.username || `@${ctx.from.username || userId}`, productInfo.offerId || 1)
