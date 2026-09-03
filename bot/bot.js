@@ -1039,9 +1039,10 @@ function parseFzrOrderProduct(order) {
         return {
             categoryId: parsed.category_id || parsed.categoryId || parsed.type || order.external_product_id,
             offerId: parsed.offer_id || parsed.offerId || parsed.value || order.product_id,
+            cartItems: Array.isArray(parsed.cart_items) ? parsed.cart_items : [],
         };
     } catch (_) {
-        return { categoryId: order.external_product_id, offerId: order.product_id };
+        return { categoryId: order.external_product_id, offerId: order.product_id, cartItems: [] };
     }
 }
 
@@ -1055,14 +1056,14 @@ async function resolveStoredFzrProduct(order) {
     let offersData = await getTopupOffers(categoryId);
     const offers = Array.isArray(offersData.offers) ? offersData.offers : [];
     const exactOffer = offers.find((offer) => String(offer.offer_id || "") === String(offerId || ""));
-    if (exactOffer) return { categoryId, offerId: exactOffer.offer_id };
+    if (exactOffer) return { categoryId, offerId: exactOffer.offer_id, cartItems: parsed.cartItems };
 
     const productName = String(order.product_name || "").toLowerCase().replace(/\s+/g, " ").trim();
     const matchingOffer = offers.find((offer) => {
         const offerName = String(offer.name || "").toLowerCase().replace(/\s+/g, " ").trim();
         return offerName === productName || offerName.includes(productName) || productName.includes(offerName);
     });
-    return { categoryId, offerId: matchingOffer?.offer_id || offerId };
+    return { categoryId, offerId: matchingOffer?.offer_id || offerId, cartItems: parsed.cartItems };
 }
 
 async function deliverStoredInstantOrder(order) {
@@ -1074,7 +1075,10 @@ async function deliverStoredInstantOrder(order) {
             return { success: false, error: "Missing category, offer, or player ID" };
         }
         console.log(`[FZR] Delivering order #${order.id}: category=${product.categoryId}, offer=${product.offerId}, player=${fields.player_id}`);
-        return createTopupOrder(product.categoryId, product.offerId, fields);
+        const cartItems = product.cartItems.length
+            ? product.cartItems
+            : [{ categoryId: product.categoryId, offerId: product.offerId, quantity: 1, name: order.product_name }];
+        return deliverInstantCartItems({ cartItems }, fields.player_id);
     }
     if (order.delivery_type === "telegram") {
         const username = order.player_id || fields.telegram_username || fields.username;
@@ -3795,7 +3799,7 @@ bot.on("text", async (ctx) => {
 
         const productIdToInsert = product.type === "database" ? product.productId : null;
         const externalProductId = product.type === "fzr_topup"
-            ? JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId })
+            ? JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId, cart_items: product.cartItems || [] })
             : product.type === "telegram_service"
                 ? JSON.stringify({ type: product.product_type, value: product.offerId })
                 : null;
