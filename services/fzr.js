@@ -141,7 +141,7 @@ async function validatePlayer(categoryId, playerId) {
   };
 }
 
-async function createTopupOrder(categoryId, offerId, fields = {}) {
+async function createTopupOrder(categoryId, offerId, fields = {}, idempotencyKey = null) {
   if (!FZR_API_KEY) {
     return {
       success: true,
@@ -162,9 +162,14 @@ async function createTopupOrder(categoryId, offerId, fields = {}) {
     fields,
   };
 
+  const requestHeaders = {};
+  if (idempotencyKey) {
+    requestHeaders["Idempotency-Key"] = idempotencyKey;
+  }
+
   console.log(`[FZR] POST /topups/order category_id=${normalizedCategoryId} offer_id=${normalizedOfferId}`);
 
-  const res = await fzrPost("/topups/order", payload);
+  const res = await fzrPost("/topups/order", payload, requestHeaders);
 
   if (!res || res.ok === false) {
     return {

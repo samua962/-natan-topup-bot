@@ -1820,7 +1820,8 @@ async function deliverInstantCartItems(productInfo, playerId) {
         }
 
         for (let index = 0; index < quantity; index += 1) {
-            const result = await createTopupOrder(categoryId, offerId, { player_id: playerId });
+            const uniqueKey = `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
+            const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
             results.push(result);
             if (!result || result.success !== true) {
                 return { success: false, error: result?.error || "Instant delivery failed.", results };
