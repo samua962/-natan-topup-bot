@@ -1071,7 +1071,7 @@ async function deliverStoredInstantOrder(order) {
     if (order.delivery_type === "fzr") {
         fields.player_id = fields.player_id || order.player_id;
         if (!product.categoryId || !product.offerId || !fields.player_id) {
-            return { success: false, error: "Missing FZR category, offer, or player ID" };
+            return { success: false, error: "Missing category, offer, or player ID" };
         }
         console.log(`[FZR] Delivering order #${order.id}: category=${product.categoryId}, offer=${product.offerId}, player=${fields.player_id}`);
         return createTopupOrder(product.categoryId, product.offerId, fields);
@@ -1848,7 +1848,7 @@ async function processWalletPayment(ctx, productInfo) {
             await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} is queued for instant delivery retry.\n\nYou will be notified as soon as the provider completes it.`, []);
             await ctx.telegram.sendMessage(
                 process.env.ADMIN_ID,
-                `🔴 WALLET PURCHASE (INSTANT DELIVERY RETRY REQUIRED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ FZR rejected or could not process the order.`,
+                `🔴 WALLET PURCHASE (INSTANT DELIVERY RETRY REQUIRED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ The provider rejected or could not process the order.`,
                 { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Instant Delivery", callback_data: `retry_instant_${orderId}` }]] } }
             );
             setTimeout(() => showMainMenu(ctx), 3000);
@@ -3860,7 +3860,7 @@ bot.on("text", async (ctx) => {
                     } catch (e) { }
 
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                        `🟡 ORDER #${orderId} verified (FZR error: ${fzrError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
+                        `🟡 ORDER #${orderId} verified (provider error: ${fzrError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                         buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
                         `\n\n👇 Click Complete after manual delivery.`,
                         { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
@@ -4433,9 +4433,9 @@ bot.on("text", async (ctx) => {
                         "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                 } catch (e) { }
 
-                let adminMsg = `Order #${orderId} BOA payment verified (FZR error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
+                let adminMsg = `Order #${orderId} BOA payment verified (provider error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
                     buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
-                    `\n\nFZR error: ${fzrError.message}\nClick "Complete" after manual delivery.`;
+                    `\n\nProvider error: ${fzrError.message}\nClick "Complete" after manual delivery.`;
 
                 await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                     reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -5008,9 +5008,9 @@ bot.on("photo", async (ctx) => {
                                     "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                             } catch (e) { }
 
-                            let adminMsg = `🟡 Order #${orderId} payment verified (FZR error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
+                            let adminMsg = `🟡 Order #${orderId} payment verified (provider error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
                                 buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
-                                `\n\n⚠️ FZR error: ${fzrError.message}\n👇 Click "Complete" after manual delivery.`;
+                                `\n\n⚠️ Provider error: ${fzrError.message}\n👇 Click "Complete" after manual delivery.`;
 
                             await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                 reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
