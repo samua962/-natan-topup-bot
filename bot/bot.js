@@ -48,6 +48,251 @@ function parseUserInputs(input) {
     return input;
 }
 
+function buildCartItemKey(item = {}) {
+    const type = String(item.type || "item");
+    const productType = String(item.product_type || "");
+    const categoryId = String(item.categoryId || item.productId || "");
+    const offerId = String(item.offerId || item.productId || "");
+    const name = String(item.name || "");
+    return `${type}_${productType}_${categoryId}_${offerId}_${name}`.replace(/\s+/g, "_").toLowerCase();
+}
+
+function resolveCartCategory(item = {}) {
+    const raw = String(item.categoryId || item.productId || item.type || item.product_type || "").toLowerCase();
+    if (!raw) return "general";
+
+    if (raw.includes("pubg") || raw.includes("uc") || raw.includes("wow") || raw.includes("battle") || raw.includes("mobile")) return "pubg";
+    if (raw.includes("free_fire") || raw.includes("freefire") || raw.includes("garena")) return "free_fire";
+    if (raw.includes("delta") || raw.includes("delta_force")) return "delta_force";
+    if (raw.includes("blood") || raw.includes("blood_strike")) return "blood_strike";
+    if (raw.includes("telegram") || item.product_type === "telegram_stars" || item.product_type === "telegram_premium") return "telegram";
+    if (item.type === "telegram_service") return "telegram";
+    if (item.type === "fzr_topup") return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "instant";
+
+    return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "general";
+}
+
+function ensureCart(userId) {
+    if (!userState[userId]) userState[userId] = {};
+    if (!userState[userId].cart) userState[userId].cart = [];
+    return userState[userId].cart;
+}
+
+function canAddToCart(userId, item) {
+    const cart = ensureCart(userId);
+    if (!cart.length) {
+        userState[userId].cartCategory = resolveCartCategory(item);
+        return { allowed: true, message: null };
+    }
+
+    const currentCategory = userState[userId].cartCategory || resolveCartCategory(cart[0]);
+    const incomingCategory = resolveCartCategory(item);
+
+    if (currentCategory === incomingCategory) {
+        return { allowed: true, message: null };
+    }
+
+    return {
+        allowed: false,
+        message: `🛒 Your cart is for ${currentCategory.replace(/_/g, " ").toUpperCase()}. Please finish or clear the cart before adding a different category.`,
+    };
+}
+
+function addItemToCart(userId, item, quantity = 1) {
+    const cart = ensureCart(userId);
+    const check = canAddToCart(userId, item);
+    if (!check.allowed) {
+        return { ok: false, message: check.message };
+    }
+
+    const key = buildCartItemKey(item);
+    const normalizedQuantity = Math.max(1, Number(quantity) || 1);
+    const existing = cart.find((entry) => entry.key === key);
+
+    if (existing) {
+        existing.quantity = Math.min(10, existing.quantity + normalizedQuantity);
+        existing.price = Number(item.price || existing.price || 0);
+        existing.total = existing.price * existing.quantity;
+        return existing;
+    }
+
+    const cartItem = {
+        key,
+        productId: item.productId || item.offerId || item.categoryId || "",
+        categoryId: item.categoryId || "",
+        offerId: item.offerId || item.productId || "",
+        name: item.name || "Product",
+        price: Number(item.price || 0),
+        quantity: normalizedQuantity,
+        total: Number(item.price || 0) * normalizedQuantity,
+        type: item.type || "product",
+        product_type: item.product_type || "",
+        playerId: item.playerId || null,
+        playerName: item.playerName || null,
+        userInputs: item.userInputs || {},
+    };
+
+    if (!cart.length) {
+        userState[userId].cartCategory = resolveCartCategory(item);
+    }
+
+    cart.push(cartItem);
+    return { ok: true, item: cartItem };
+}
+
+function updateCartItemQuantity(userId, key, delta) {
+    const cart = ensureCart(userId);
+    const item = cart.find((entry) => entry.key === key);
+    if (!item) return null;
+
+    item.quantity = Math.max(1, item.quantity + delta);
+    item.total = Number(item.price || 0) * item.quantity;
+    if (item.quantity <= 0) {
+        const index = cart.findIndex((entry) => entry.key === key);
+        if (index >= 0) cart.splice(index, 1);
+    }
+    return item;
+}
+
+function clearCart(userId) {
+    const cart = ensureCart(userId);
+    cart.length = 0;
+    if (userState[userId]) {
+        delete userState[userId].cartCategory;
+    }
+}
+
+function getCartTotal(userId) {
+    const cart = ensureCart(userId);
+    return cart.reduce((sum, item) => {
+        const quantity = Number(item.quantity || 1);
+        const price = Number(item.price || 0);
+        const subtotal = quantity * price;
+        item.total = subtotal;
+        return sum + subtotal;
+    }, 0);
+}
+
+function getCartCategoryLabel(category) {
+    const map = {
+        pubg: "PUBG",
+        free_fire: "Free Fire",
+        delta_force: "Delta Force",
+        blood_strike: "Blood Strike",
+        telegram: "Telegram",
+        instant: "Instant",
+        general: "General",
+    };
+    return map[String(category || "general").toLowerCase()] || String(category || "General").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function getCartSummary(userId) {
+    const cart = ensureCart(userId);
+    const total = getCartTotal(userId);
+    return {
+        items: cart,
+        total,
+        count: cart.reduce((sum, item) => sum + Number(item.quantity || 1), 0),
+    };
+}
+
+function buildCartKeyboard(userId) {
+    const summary = getCartSummary(userId);
+    const rows = [];
+
+    for (let index = 0; index < summary.items.length; index += 1) {
+        const item = summary.items[index];
+        rows.push([
+            { text: `− ${item.name}`, callback_data: `cart_dec_${index}` },
+            { text: `+ ${item.name}`, callback_data: `cart_inc_${index}` },
+        ]);
+    }
+
+    rows.push([
+        { text: `✅ Checkout (${summary.total} ETB)`, callback_data: "cart_checkout" },
+        { text: "🗑 Clear", callback_data: "cart_clear" },
+    ]);
+    return rows;
+}
+
+async function renderCartSummary(ctx, userId) {
+    const summary = getCartSummary(userId);
+    const state = userState[userId] || {};
+    const cartMessage = state.cartMessage || null;
+
+    const buildAndSend = async (text, keyboard) => {
+        if (cartMessage && cartMessage.chatId && cartMessage.messageId) {
+            try {
+                await ctx.telegram.editMessageText(cartMessage.chatId, cartMessage.messageId, undefined, text, {
+                    reply_markup: { inline_keyboard: keyboard },
+                });
+                return true;
+            } catch (err) {
+                // fall back to current callback message or a fresh reply
+            }
+        }
+
+        if (ctx.callbackQuery && ctx.callbackQuery.message) {
+            try {
+                const edited = await ctx.editMessageText(text, { reply_markup: { inline_keyboard: keyboard } });
+                if (edited && edited.message_id) {
+                    state.cartMessage = {
+                        chatId: edited.chat.id || ctx.chat.id,
+                        messageId: edited.message_id,
+                    };
+                }
+                return true;
+            } catch (err) {}
+        }
+
+        const sent = await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
+        if (sent && sent.message_id) {
+            state.cartMessage = {
+                chatId: sent.chat.id || ctx.chat.id,
+                messageId: sent.message_id,
+            };
+        }
+        return true;
+    };
+
+    if (!summary.items.length) {
+        const emptyMessage = "🛒 Your cart is empty.\n\nChoose another product to start checkout.";
+        const emptyKeyboard = [[{ text: "Continue Shopping", callback_data: "main_menu" }]];
+        await buildAndSend(emptyMessage, emptyKeyboard);
+        return;
+    }
+
+    const categoryName = getCartCategoryLabel(userState[userId]?.cartCategory || "general");
+    const lines = summary.items.map((item) => `• ${item.name} x${item.quantity} — ${item.total} ETB`);
+    const message = `🛒 ${categoryName} CART\n\n${lines.join("\n")}\n\n💰 Total: ${summary.total} ETB\nItems: ${summary.count}`;
+    await buildAndSend(message, buildCartKeyboard(userId));
+}
+
+function buildCartProductFromState(userId) {
+    const cart = ensureCart(userId);
+    if (!cart.length) return null;
+
+    const summary = getCartSummary(userId);
+    const combinedName = cart.map((item) => `${item.name}${item.quantity > 1 ? ` x${item.quantity}` : ""}`).join(" + ");
+    const firstItem = cart[0];
+
+    return {
+        productId: firstItem.productId,
+        categoryId: firstItem.categoryId,
+        offerId: firstItem.offerId,
+        price: summary.total,
+        name: combinedName,
+        type: firstItem.type,
+        product_type: firstItem.product_type,
+        cartItems: cart,
+        fullProduct: {
+            name: combinedName,
+            price_etb: summary.total,
+            product_type: firstItem.product_type,
+        },
+    };
+}
+
 function getTxIdHint(methodName) {
     const bank = resolveSmsBank(methodName);
     if (bank === "telebirr") {
@@ -2683,7 +2928,8 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("fo")) {
         const payload = getCallbackPayload(userId, data);
         if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the product list again.");
-        state.product = {
+
+        const item = {
             productId: payload.productCategoryId,
             categoryId: payload.categoryId,
             offerId: payload.offerId,
@@ -2693,8 +2939,16 @@ bot.on("callback_query", async (ctx) => {
             product_type: "topup",
             fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: "topup" },
         };
+
+        const addResult = addItemToCart(userId, item, 1);
+        if (!addResult?.ok) {
+            return ctx.reply(addResult.message || "🛒 This item does not match your cart category.");
+        }
+
+        state.product = buildCartProductFromState(userId) || item;
         state.step = "PLAYER";
-        return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+
+        return renderCartSummary(ctx, userId);
     }
 
     if (data.startsWith("ts") || data.startsWith("tp")) {
@@ -2712,6 +2966,61 @@ bot.on("callback_query", async (ctx) => {
         };
         state.step = "PLAYER";
         return ctx.reply("👤 Enter your Telegram username or phone number:\n\nExample: @username\n\nType /cancel to cancel", { parse_mode: "HTML" });
+    }
+
+    if (data === "cart_view") {
+        return renderCartSummary(ctx, userId);
+    }
+
+    if (data.startsWith("cart_inc_")) {
+        const index = Number(data.split("_").pop());
+        const cart = ensureCart(userId);
+        const item = cart[index];
+        if (!item) return renderCartSummary(ctx, userId);
+
+        item.quantity = Math.min(10, Number(item.quantity || 1) + 1);
+        item.total = Number(item.price || 0) * Number(item.quantity || 1);
+        return renderCartSummary(ctx, userId);
+    }
+
+    if (data.startsWith("cart_dec_")) {
+        const index = Number(data.split("_").pop());
+        const cart = ensureCart(userId);
+        const item = cart[index];
+        if (!item) return renderCartSummary(ctx, userId);
+
+        const nextQty = Number(item.quantity || 1) - 1;
+        if (nextQty <= 0) {
+            cart.splice(index, 1);
+            if (!cart.length) {
+                clearCart(userId);
+            }
+        } else {
+            item.quantity = nextQty;
+            item.total = Number(item.price || 0) * Number(item.quantity || 1);
+        }
+
+        return renderCartSummary(ctx, userId);
+    }
+
+    if (data === "cart_clear") {
+        clearCart(userId);
+        return renderCartSummary(ctx, userId);
+    }
+
+    if (data === "cart_checkout") {
+        const productInfo = buildCartProductFromState(userId);
+        if (!productInfo) {
+            return ctx.reply("🛒 Your cart is empty.");
+        }
+
+        state.product = productInfo;
+        state.step = "PLAYER";
+        const firstItem = productInfo.cartItems[0];
+        if (firstItem.type === "fzr_topup") {
+            return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+        }
+        return ctx.reply("👤 Enter the required username or phone number for the cart checkout:\n\nType /cancel to cancel", { parse_mode: "HTML" });
     }
 
     if (data.startsWith("pw")) {
@@ -2980,6 +3289,7 @@ bot.on("callback_query", async (ctx) => {
     if (data === "confirm_yes") {
         if (state.product) {
             state.step = "PAYMENT_METHOD_SELECTION";
+            const cartItems = Array.isArray(state.product.cartItems) ? state.product.cartItems : null;
             const productInfo = {
                 productId: state.product.productId,
                 categoryId: state.product.categoryId,
@@ -2990,7 +3300,8 @@ bot.on("callback_query", async (ctx) => {
                 playerName: state.playerName,
                 userInputs: state.collectedData,
                 type: state.product.type,
-                product_type: state.product.product_type
+                product_type: state.product.product_type,
+                cartItems,
             };
             return showPaymentOptions(ctx, productInfo);
         }
