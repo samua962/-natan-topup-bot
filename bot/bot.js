@@ -1810,6 +1810,8 @@ async function deliverInstantCartItems(productInfo, playerId) {
         }];
 
     const results = [];
+    const providerOrderIds = new Set();
+    const requestedUnits = cartItems.reduce((total, item) => total + Math.max(1, Number(item.quantity || 1)), 0);
     for (const item of cartItems) {
         const categoryId = item.categoryId || productInfo?.categoryId;
         const offerId = item.offerId || item.productId || productInfo?.offerId || productInfo?.productId;
@@ -1820,16 +1822,33 @@ async function deliverInstantCartItems(productInfo, playerId) {
         }
 
         for (let index = 0; index < quantity; index += 1) {
+            if (results.length > 0) {
+                // FZR can collapse identical player/offer requests submitted in the same instant.
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+            }
+
             const uniqueKey = `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
             const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
             results.push(result);
             if (!result || result.success !== true) {
                 return { success: false, error: result?.error || "Instant delivery failed.", results };
             }
+
+            if (!result.orderId) {
+                return { success: false, error: "FZR did not return an order ID. Delivery was not confirmed.", results };
+            }
+
+            if (providerOrderIds.has(String(result.orderId))) {
+                return { success: false, error: "FZR returned the same provider order for more than one cart item. Delivery was not confirmed.", results };
+            }
+
+            providerOrderIds.add(String(result.orderId));
         }
     }
 
-    return { success: true, results };
+    return results.length === requestedUnits
+        ? { success: true, results }
+        : { success: false, error: "Not every cart item was sent to FZR.", results };
 }
 
 // =====================
