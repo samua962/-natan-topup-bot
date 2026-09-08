@@ -2496,6 +2496,23 @@ function getFzrTopupCategoryName(categoryName, categoryId = "") {
     return null;
 }
 
+function getInstantProductEmoji(categoryId, categoryName = "", productLabel = "") {
+    const label = String(productLabel || "").toLowerCase();
+    const categoryKey = getFzrTopupCategoryName(categoryName, categoryId);
+    const modeKey = label === "uc"
+        ? "instant_uc"
+        : label === "wow"
+            ? "instant_wow"
+            : label === "special"
+                ? "instant_special"
+                : null;
+
+    return (modeKey && getEmoji("system", modeKey))
+        || (categoryKey && getEmoji("system", `instant_category_${categoryKey}`))
+        || getEmoji("category", categoryId)
+        || null;
+}
+
 async function getFzrTopupMenuForCategory(categoryName) {
     const categoryKey = getFzrTopupCategoryName(categoryName);
     const data = await getTopupCategories(100);
@@ -2541,14 +2558,20 @@ async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
         return;
     }
 
-    const buttons = buildButtons(items.map((item) => ({
-        text: item.label,
-        callback_data: storeCallbackPayload(ctx.from.id, "fc", {
-            categoryId,
-            productCategoryId: item.id,
-            label: item.label,
-        }),
-    })));
+    const buttons = buildButtons(items.map((item) => {
+        const button = {
+            text: item.label,
+            callback_data: storeCallbackPayload(ctx.from.id, "fc", {
+                categoryId,
+                productCategoryId: item.id,
+                label: item.label,
+            }),
+        };
+        const emojiId = getEmoji("system", `instant_category_${String(item.id).toLowerCase()}`)
+            || getInstantProductEmoji(item.id, key, item.label);
+        if (emojiId) button.icon_custom_emoji_id = emojiId;
+        return button;
+    }));
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
     buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
 
@@ -2564,20 +2587,32 @@ async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
 }
 
 async function showPubgGameMenu(ctx, categoryId, categoryName) {
+    const makeButton = (text, callbackData, emojiKey) => {
+        const button = { text, callback_data: callbackData };
+        const emojiId = getEmoji("system", emojiKey);
+        if (emojiId) button.icon_custom_emoji_id = emojiId;
+        return button;
+    };
     const buttons = [
-        [{ text: "⚡ UC", callback_data: "pubg_instant_uc" }],
-        [{ text: "💎 WOW Coins", callback_data: "pubg_instant_wow" }],
-        [{ text: "🎁 Special Packs", callback_data: "pubg_instant_special" }],
-        [{ text: "📦 Manual", callback_data: "manual_pubg" }],
+        [makeButton("⚡ UC", "pubg_instant_uc", "instant_uc")],
+        [makeButton("💎 WOW Coins", "pubg_instant_wow", "instant_wow")],
+        [makeButton("🎁 Special Packs", "pubg_instant_special", "instant_special")],
+        [makeButton("📦 Manual", "manual_pubg", "instant_manual")],
         [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, `⚡ ${categoryName || "PUBG Mobile"}\n\nChoose instant type:`, buttons);
 }
 
 async function showTelegramGameMenu(ctx, categoryId, categoryName) {
+    const makeButton = (text, callbackData, emojiKey) => {
+        const button = { text, callback_data: callbackData };
+        const emojiId = getEmoji("system", emojiKey);
+        if (emojiId) button.icon_custom_emoji_id = emojiId;
+        return button;
+    };
     const buttons = [
-        [{ text: "⭐ Telegram Stars", callback_data: "telegram_stars" }],
-        [{ text: "👑 Telegram Premium", callback_data: "telegram_premium" }],
+        [makeButton("⭐ Telegram Stars", "telegram_stars", "telegram_stars")],
+        [makeButton("👑 Telegram Premium", "telegram_premium", "telegram_premium")],
         [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
     ];
     await safeEdit(ctx, `📱 ${categoryName || "Telegram"}\n\nChoose Telegram service:`, buttons);
@@ -2678,7 +2713,7 @@ async function showFzrOfferList(ctx, categoryId, categoryName, productCategoryId
         const rawPrice = Number(offer.price_usd || offer.price || offer.amount_usd || 0);
         const etb = await calculateFzrPrice(rawPrice, productCategoryId || categoryId, data.name || productLabel);
         const label = String(offer.name || offer.title || offer.label || offer.offer_name || `Offer ${offer.offer_id || offer.id || ""}`);
-        buttons.push({
+        const button = {
             text: `${label} - ${etb} ETB`,
             callback_data: storeCallbackPayload(ctx.from.id, "fo", {
                 categoryId,
@@ -2687,7 +2722,10 @@ async function showFzrOfferList(ctx, categoryId, categoryName, productCategoryId
                 label,
                 priceEtb: etb,
             }),
-        });
+        };
+        const emojiId = getInstantProductEmoji(categoryId, categoryName, productLabel);
+        if (emojiId) button.icon_custom_emoji_id = emojiId;
+        buttons.push(button);
     }
 
     const rows = buildButtons(buttons);

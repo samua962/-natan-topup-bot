@@ -46,6 +46,7 @@ async function main() {
         results.push(await runMigration("Populate all category and product emoji IDs", "003_populate_all_emoji_ids.sql"));
         results.push(await runMigration("Update with correct emoji IDs from client", "004_update_correct_emoji_ids.sql"));
         results.push(await runMigration("Add instant UC emoji", "005_add_instant_uc_emoji.sql"));
+        results.push(await runMigration("Add instant menu emojis", "006_add_instant_menu_emojis.sql"));
         
         console.log("\n=====================================");
         if (results.every(r => r)) {
