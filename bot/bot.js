@@ -4,34 +4,13 @@ const db = require("../database/db");
 const { getEmoji } = require("./emoji-helper");
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const axios = require("axios");
-const {
-    getTopupCategories,
-    getTopupOffers,
-    createTopupOrder,
-    validatePlayer: validateFzrPlayer,
-    getTelegramStars,
-    getTelegramPremium,
-    createTelegramStarsOrder,
-    createTelegramPremiumOrder,
-} = require("../services/fzr");
+const { createOrder, validatePlayer, validatePlayerOnly } = require("../services/ragner");
 const FormData = require("form-data");
 const { resolveVerifyEtBank, verifyPaymentWithVerifyEt } = require("../services/verify-et");
 
 const userState = {};
 const processingOrders = new Set();
 const userHistory = {};
-
-function storeCallbackPayload(userId, prefix, payload) {
-    if (!userState[userId]) userState[userId] = {};
-    if (!userState[userId].callbackPayloads) userState[userId].callbackPayloads = {};
-    const token = `${prefix}${Math.random().toString(36).slice(2, 9)}`;
-    userState[userId].callbackPayloads[token] = payload;
-    return token;
-}
-
-function getCallbackPayload(userId, token) {
-    return userState[userId]?.callbackPayloads?.[token] || null;
-}
 
 // =====================
 // 🟢 HELPER: PARSE USER INPUTS (safe for JSONB)
@@ -46,251 +25,6 @@ function parseUserInputs(input) {
         }
     }
     return input;
-}
-
-function buildCartItemKey(item = {}) {
-    const type = String(item.type || "item");
-    const productType = String(item.product_type || "");
-    const categoryId = String(item.categoryId || item.productId || "");
-    const offerId = String(item.offerId || item.productId || "");
-    const name = String(item.name || "");
-    return `${type}_${productType}_${categoryId}_${offerId}_${name}`.replace(/\s+/g, "_").toLowerCase();
-}
-
-function resolveCartCategory(item = {}) {
-    const raw = String(item.categoryId || item.productId || item.type || item.product_type || "").toLowerCase();
-    if (!raw) return "general";
-
-    if (raw.includes("pubg") || raw.includes("uc") || raw.includes("wow") || raw.includes("battle") || raw.includes("mobile")) return "pubg";
-    if (raw.includes("free_fire") || raw.includes("freefire") || raw.includes("garena")) return "free_fire";
-    if (raw.includes("delta") || raw.includes("delta_force")) return "delta_force";
-    if (raw.includes("blood") || raw.includes("blood_strike")) return "blood_strike";
-    if (raw.includes("telegram") || item.product_type === "telegram_stars" || item.product_type === "telegram_premium") return "telegram";
-    if (item.type === "telegram_service") return "telegram";
-    if (item.type === "fzr_topup") return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "instant";
-
-    return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "general";
-}
-
-function ensureCart(userId) {
-    if (!userState[userId]) userState[userId] = {};
-    if (!userState[userId].cart) userState[userId].cart = [];
-    return userState[userId].cart;
-}
-
-function canAddToCart(userId, item) {
-    const cart = ensureCart(userId);
-    if (!cart.length) {
-        userState[userId].cartCategory = resolveCartCategory(item);
-        return { allowed: true, message: null };
-    }
-
-    const currentCategory = userState[userId].cartCategory || resolveCartCategory(cart[0]);
-    const incomingCategory = resolveCartCategory(item);
-
-    if (currentCategory === incomingCategory) {
-        return { allowed: true, message: null };
-    }
-
-    return {
-        allowed: false,
-        message: `🛒 Your cart is for ${currentCategory.replace(/_/g, " ").toUpperCase()}. Please finish or clear the cart before adding a different category.`,
-    };
-}
-
-function addItemToCart(userId, item, quantity = 1) {
-    const cart = ensureCart(userId);
-    const check = canAddToCart(userId, item);
-    if (!check.allowed) {
-        return { ok: false, message: check.message };
-    }
-
-    const key = buildCartItemKey(item);
-    const normalizedQuantity = Math.max(1, Number(quantity) || 1);
-    const existing = cart.find((entry) => entry.key === key);
-
-    if (existing) {
-        existing.quantity = Math.min(10, existing.quantity + normalizedQuantity);
-        existing.price = Number(item.price || existing.price || 0);
-        existing.total = existing.price * existing.quantity;
-        return existing;
-    }
-
-    const cartItem = {
-        key,
-        productId: item.productId || item.offerId || item.categoryId || "",
-        categoryId: item.categoryId || "",
-        offerId: item.offerId || item.productId || "",
-        name: item.name || "Product",
-        price: Number(item.price || 0),
-        quantity: normalizedQuantity,
-        total: Number(item.price || 0) * normalizedQuantity,
-        type: item.type || "product",
-        product_type: item.product_type || "",
-        playerId: item.playerId || null,
-        playerName: item.playerName || null,
-        userInputs: item.userInputs || {},
-    };
-
-    if (!cart.length) {
-        userState[userId].cartCategory = resolveCartCategory(item);
-    }
-
-    cart.push(cartItem);
-    return { ok: true, item: cartItem };
-}
-
-function updateCartItemQuantity(userId, key, delta) {
-    const cart = ensureCart(userId);
-    const item = cart.find((entry) => entry.key === key);
-    if (!item) return null;
-
-    item.quantity = Math.max(1, item.quantity + delta);
-    item.total = Number(item.price || 0) * item.quantity;
-    if (item.quantity <= 0) {
-        const index = cart.findIndex((entry) => entry.key === key);
-        if (index >= 0) cart.splice(index, 1);
-    }
-    return item;
-}
-
-function clearCart(userId) {
-    const cart = ensureCart(userId);
-    cart.length = 0;
-    if (userState[userId]) {
-        delete userState[userId].cartCategory;
-    }
-}
-
-function getCartTotal(userId) {
-    const cart = ensureCart(userId);
-    return cart.reduce((sum, item) => {
-        const quantity = Number(item.quantity || 1);
-        const price = Number(item.price || 0);
-        const subtotal = quantity * price;
-        item.total = subtotal;
-        return sum + subtotal;
-    }, 0);
-}
-
-function getCartCategoryLabel(category) {
-    const map = {
-        pubg: "PUBG",
-        free_fire: "Free Fire",
-        delta_force: "Delta Force",
-        blood_strike: "Blood Strike",
-        telegram: "Telegram",
-        instant: "Instant",
-        general: "General",
-    };
-    return map[String(category || "general").toLowerCase()] || String(category || "General").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function getCartSummary(userId) {
-    const cart = ensureCart(userId);
-    const total = getCartTotal(userId);
-    return {
-        items: cart,
-        total,
-        count: cart.reduce((sum, item) => sum + Number(item.quantity || 1), 0),
-    };
-}
-
-function buildCartKeyboard(userId) {
-    const summary = getCartSummary(userId);
-    const rows = [];
-
-    for (let index = 0; index < summary.items.length; index += 1) {
-        const item = summary.items[index];
-        rows.push([
-            { text: `− ${item.name}`, callback_data: `cart_dec_${index}` },
-            { text: `+ ${item.name}`, callback_data: `cart_inc_${index}` },
-        ]);
-    }
-
-    rows.push([
-        { text: `✅ Checkout (${summary.total} ETB)`, callback_data: "cart_checkout" },
-        { text: "🗑 Clear", callback_data: "cart_clear" },
-    ]);
-    return rows;
-}
-
-async function renderCartSummary(ctx, userId) {
-    const summary = getCartSummary(userId);
-    const state = userState[userId] || {};
-    const cartMessage = state.cartMessage || null;
-
-    const buildAndSend = async (text, keyboard) => {
-        if (cartMessage && cartMessage.chatId && cartMessage.messageId) {
-            try {
-                await ctx.telegram.editMessageText(cartMessage.chatId, cartMessage.messageId, undefined, text, {
-                    reply_markup: { inline_keyboard: keyboard },
-                });
-                return true;
-            } catch (err) {
-                // fall back to current callback message or a fresh reply
-            }
-        }
-
-        if (ctx.callbackQuery && ctx.callbackQuery.message) {
-            try {
-                const edited = await ctx.editMessageText(text, { reply_markup: { inline_keyboard: keyboard } });
-                if (edited && edited.message_id) {
-                    state.cartMessage = {
-                        chatId: edited.chat.id || ctx.chat.id,
-                        messageId: edited.message_id,
-                    };
-                }
-                return true;
-            } catch (err) {}
-        }
-
-        const sent = await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
-        if (sent && sent.message_id) {
-            state.cartMessage = {
-                chatId: sent.chat.id || ctx.chat.id,
-                messageId: sent.message_id,
-            };
-        }
-        return true;
-    };
-
-    if (!summary.items.length) {
-        const emptyMessage = "🛒 Your cart is empty.\n\nChoose another product to start checkout.";
-        const emptyKeyboard = [[{ text: "Continue Shopping", callback_data: "main_menu" }]];
-        await buildAndSend(emptyMessage, emptyKeyboard);
-        return;
-    }
-
-    const categoryName = getCartCategoryLabel(userState[userId]?.cartCategory || "general");
-    const lines = summary.items.map((item) => `• ${item.name} x${item.quantity} — ${item.total} ETB`);
-    const message = `🛒 ${categoryName} CART\n\n${lines.join("\n")}\n\n💰 Total: ${summary.total} ETB\nItems: ${summary.count}`;
-    await buildAndSend(message, buildCartKeyboard(userId));
-}
-
-function buildCartProductFromState(userId) {
-    const cart = ensureCart(userId);
-    if (!cart.length) return null;
-
-    const summary = getCartSummary(userId);
-    const combinedName = cart.map((item) => `${item.name}${item.quantity > 1 ? ` x${item.quantity}` : ""}`).join(" + ");
-    const firstItem = cart[0];
-
-    return {
-        productId: firstItem.productId,
-        categoryId: firstItem.categoryId,
-        offerId: firstItem.offerId,
-        price: summary.total,
-        name: combinedName,
-        type: firstItem.type,
-        product_type: firstItem.product_type,
-        cartItems: cart,
-        fullProduct: {
-            name: combinedName,
-            price_etb: summary.total,
-            product_type: firstItem.product_type,
-        },
-    };
 }
 
 function getTxIdHint(methodName) {
@@ -349,14 +83,25 @@ function extractSmsPaymentReference(providerCode, rawText) {
 
     // CBE Birr SMS messages contain a transaction ID without a URL.
     if (bank === "cbebirr") {
-        const transactionMatch = smsText.match(/\b(?:DH[A-Z]|FT)[A-Z0-9]{4,30}\b/i);
+        const transactionMatch = smsText.match(/\b(?:DHL|FT)[A-Z0-9]{4,30}\b/i);
         if (transactionMatch?.[0]) {
             return { bank, reference: transactionMatch[0].trim(), mode: "transaction_id" };
         }
         return { bank, reference: null, mode: "transaction_id" };
     }
 
-    // Non-Telebirr: receipt URL from SMS. Strip trailing punctuation (periods, commas, etc.)
+    // Non-Telebirr: receipt URL from SMS.
+    // eBirr SMS can wrap a URL across lines, for example:
+    // https://receipt.ebirr.com/kaafimf
+    // /TOADap...
+    // Reconstruct that folded URL first so duplicate checks use the full unique reference.
+    const eBirrFoldedUrlMatch = smsText.match(/https?:\/\/receipt\.ebirr\.com\/[^\s,;]+(?:\s*\/[A-Za-z0-9._~-]+)*/i);
+    if (eBirrFoldedUrlMatch?.[0]) {
+        const cleanUrl = eBirrFoldedUrlMatch[0].replace(/\s+/g, "").replace(/[.,;:!?]+$/, "").trim();
+        return { bank, reference: cleanUrl, mode: "receipt_url" };
+    }
+
+    // Generic single-line URL fallback.
     const urlMatch = smsText.match(/https?:\/\/[^\s,;]+/i);
     if (urlMatch?.[0]) {
         const cleanUrl = urlMatch[0].replace(/[.,;:!?]+$/, "").trim();
@@ -1005,89 +750,23 @@ async function getDepositAmounts() {
 }
 
 // =====================
-// 🟢 FZR PRICING CONFIGURATION
+// 🟢 GET PROFIT MARGIN
 // =====================
-async function getFzrPricing() {
+async function getProfitMargin(usdPrice) {
     try {
-        const result = await db.query("SELECT key, value FROM settings WHERE key IN ('exchange_rate', 'profit_margins')");
-        const settings = Object.fromEntries(result.rows.map((row) => [row.key, row.value]));
-        const exchangeRate = Number(settings.exchange_rate) || 57;
-        let margins = {};
-        try { margins = settings.profit_margins ? JSON.parse(settings.profit_margins) : {}; } catch (_) { }
-        return { exchangeRate, margins };
-    } catch (error) {
-        console.error("FZR pricing config error:", error);
-        return { exchangeRate: 57, margins: {} };
-    }
-}
-
-async function calculateFzrPrice(usdPrice, categoryId = "", categoryName = "") {
-    const { exchangeRate, margins } = await getFzrPricing();
-    const usd = Number(usdPrice) || 0;
-    const normalize = (value) => String(value || "").toLowerCase().trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-    const categoryKey = normalize(categoryId || categoryName);
-    const categories = Array.isArray(margins.categories) ? margins.categories : [];
-    const category = categories.find((entry) => [entry.key, entry.category_id, entry.name, entry.label].filter(Boolean).map(normalize).some((key) => key === categoryKey || categoryKey.includes(key) || key.includes(categoryKey)));
-    const range = category?.ranges?.find((item) => usd >= Number(item.min_usd || 0) && usd <= Number(item.max_usd ?? Number.MAX_SAFE_INTEGER));
-    const margin = Number(range?.margin ?? category?.margin ?? 0);
-    return Math.max(10, Math.round((usd * (1 + margin / 100) * exchangeRate) / 10) * 10);
-}
-
-function parseFzrOrderProduct(order) {
-    try {
-        const parsed = JSON.parse(order.external_product_id || "{}");
-        return {
-            categoryId: parsed.category_id || parsed.categoryId || parsed.type || order.external_product_id,
-            offerId: parsed.offer_id || parsed.offerId || parsed.value || order.product_id,
-            cartItems: Array.isArray(parsed.cart_items) ? parsed.cart_items : [],
-        };
-    } catch (_) {
-        return { categoryId: order.external_product_id, offerId: order.product_id, cartItems: [] };
-    }
-}
-
-async function resolveStoredFzrProduct(order) {
-    const parsed = parseFzrOrderProduct(order);
-    let categoryId = parsed.categoryId;
-    let offerId = parsed.offerId;
-    if (!categoryId) return parsed;
-
-    if (String(categoryId).toLowerCase() === "pubg") categoryId = "pubg_mobile_auto";
-    let offersData = await getTopupOffers(categoryId);
-    const offers = Array.isArray(offersData.offers) ? offersData.offers : [];
-    const exactOffer = offers.find((offer) => String(offer.offer_id || "") === String(offerId || ""));
-    if (exactOffer) return { categoryId, offerId: exactOffer.offer_id, cartItems: parsed.cartItems };
-
-    const productName = String(order.product_name || "").toLowerCase().replace(/\s+/g, " ").trim();
-    const matchingOffer = offers.find((offer) => {
-        const offerName = String(offer.name || "").toLowerCase().replace(/\s+/g, " ").trim();
-        return offerName === productName || offerName.includes(productName) || productName.includes(offerName);
-    });
-    return { categoryId, offerId: matchingOffer?.offer_id || offerId, cartItems: parsed.cartItems };
-}
-
-async function deliverStoredInstantOrder(order) {
-    const product = order.delivery_type === "fzr" ? await resolveStoredFzrProduct(order) : parseFzrOrderProduct(order);
-    const fields = parseUserInputs(order.user_inputs) || {};
-    if (order.delivery_type === "fzr") {
-        fields.player_id = fields.player_id || order.player_id;
-        if (!product.categoryId || !product.offerId || !fields.player_id) {
-            return { success: false, error: "Missing category, offer, or player ID" };
+        const result = await db.query("SELECT value FROM settings WHERE key='profit_margins'");
+        if (result.rows[0]?.value) {
+            const margins = JSON.parse(result.rows[0].value);
+            const range = margins.ranges.find((r) => usdPrice >= r.min_usd && usdPrice <= r.max_usd);
+            if (range) {
+                return range.margin;
+            }
         }
-        console.log(`[FZR] Delivering order #${order.id}: category=${product.categoryId}, offer=${product.offerId}, player=${fields.player_id}`);
-        const cartItems = product.cartItems.length
-            ? product.cartItems
-            : [{ categoryId: product.categoryId, offerId: product.offerId, quantity: 1, name: order.product_name }];
-        return deliverInstantCartItems({ cartItems }, fields.player_id);
+        return 10;
+    } catch (error) {
+        console.error("Profit margin error:", error);
+        return 10;
     }
-    if (order.delivery_type === "telegram") {
-        const username = order.player_id || fields.telegram_username || fields.username;
-        if (!username || !product.offerId) return { success: false, error: "Missing Telegram username or plan value" };
-        return product.categoryId === "telegram_stars"
-            ? createTelegramStarsOrder(username, product.offerId)
-            : createTelegramPremiumOrder(username, product.offerId);
-    }
-    return { success: false, error: "Order is not an instant provider order" };
 }
 
 // =====================
@@ -1346,6 +1025,57 @@ function clearHistory(userId) {
 }
 
 // =====================
+// 🟢 SHOW RAGNER PRODUCTS (UC up to 3850)
+// =====================
+async function showRagnerProducts(ctx) {
+    try {
+        const res = await axios.get(
+            "https://ragnergiftcard.com/api/v1/products?game=PUBG",
+            { headers: { "X-API-KEY": process.env.RAGNER_API_KEY }, timeout: 10000 }
+        );
+        const rate = await getExchangeRate();
+        const products = res.data.data.filter((p) => {
+            const name = p.name.toLowerCase();
+            const ucMatch = p.name.match(/\d+/);
+            const uc = ucMatch ? parseInt(ucMatch[0]) : 0;
+            const excludeKeywords = ["card", "web", "prime", "plus", "weekly", "deal", "pack", "bundle", "chest", "crate"];
+            const isExcluded = excludeKeywords.some((kw) => name.includes(kw));
+            return !isExcluded && uc >= 60 && uc <= 3850;
+        });
+        products.sort((a, b) => {
+            const ucA = parseInt(a.name.match(/\d+/) || 0);
+            const ucB = parseInt(b.name.match(/\d+/) || 0);
+            return ucA - ucB;
+        });
+        if (products.length === 0) {
+            await safeEdit(ctx, "📭 No instant products available.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
+            return;
+        }
+        const ucInstantEmoji = getEmoji('system', 'uc_instant');
+        const productButtons = [];
+        for (const p of products) {
+            const margin = await getProfitMargin(p.price);
+            const priceWithMargin = p.price * (1 + margin / 100);
+            let priceETB = Math.round(priceWithMargin * rate);
+            priceETB = roundPrice(priceETB);
+            const btn = {
+                text: `${p.name} - ${priceETB} ETB`,
+                callback_data: `ragner_${p.id}_${priceETB}_${p.name.replace(/ /g, "_")}`,
+            };
+            if (ucInstantEmoji) btn.icon_custom_emoji_id = ucInstantEmoji;
+            productButtons.push(btn);
+        }
+        const buttons = buildButtons(productButtons);
+        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
+        await safeEdit(ctx, "⚡ PUBG UC Instant Delivery\n\nMax: 3850 UC\n\nSelect UC amount:", buttons);
+    } catch (error) {
+        console.error("Ragner products error:", error);
+        await safeEdit(ctx, "⏳ Service busy. Please try again.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
+    }
+}
+
+// =====================
 // 🟢 SHOW DATABASE PRODUCTS
 // =====================
 async function showDatabaseProducts(ctx, subId) {
@@ -1577,7 +1307,7 @@ async function askForFields(ctx, product) {
         productId: product.id,
         price: product.price_etb,
         name: product.name,
-        type: "database",
+        type: product.product_type === "uc_instant" ? "ragner" : "database",
         product_type: productType,
         fullProduct: product
     };
@@ -1649,7 +1379,7 @@ async function showPaymentOptions(ctx, productInfo) {
     // Add Wallet Payment option
     buttons.push([{
         text: `👛 Wallet Payment (${balance} ETB)`,
-        callback_data: storeCallbackPayload(userId, "pw", { productInfo })
+        callback_data: `unified_pay_wallet_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
     }]);
 
     // Add all bank transfer methods
@@ -1658,7 +1388,7 @@ async function showPaymentOptions(ctx, productInfo) {
             buttons.push([
                 {
                     text: m.name,
-                    callback_data: storeCallbackPayload(userId, "pm", { productInfo, methodIndex: idx })
+                    callback_data: `unified_payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}`
                 }
             ]);
         });
@@ -1689,7 +1419,7 @@ async function showBankTransferMethods(ctx, productInfo) {
     userState[userId].productInfo = productInfo;
 
     const buttons = methods.map((m, idx) => [
-        { text: m.name, callback_data: storeCallbackPayload(userId, "pm", { productInfo, methodIndex: idx }) },
+        { text: m.name, callback_data: `payment_i${idx}_${productInfo.productId}_${productInfo.price}_${productInfo.name.replace(/ /g, "_")}` },
     ]);
     buttons.push([{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]);
     buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
@@ -1803,58 +1533,6 @@ Type /cancel to cancel.
     }
 }
 
-async function deliverInstantCartItems(productInfo, playerId) {
-    const cartItems = Array.isArray(productInfo?.cartItems) && productInfo.cartItems.length > 0
-        ? productInfo.cartItems
-        : [{
-            categoryId: productInfo?.categoryId,
-            offerId: productInfo?.offerId || productInfo?.productId,
-            quantity: 1,
-            name: productInfo?.name,
-        }];
-
-    const results = [];
-    const providerOrderIds = new Set();
-    const requestedUnits = cartItems.reduce((total, item) => total + Math.max(1, Number(item.quantity || 1)), 0);
-    for (const item of cartItems) {
-        const categoryId = item.categoryId || productInfo?.categoryId;
-        const offerId = item.offerId || item.productId || productInfo?.offerId || productInfo?.productId;
-        const quantity = Math.max(1, Number(item.quantity || 1));
-
-        if (!categoryId || !offerId) {
-            return { success: false, error: "Missing instant product category or offer information." };
-        }
-
-        for (let index = 0; index < quantity; index += 1) {
-            if (results.length > 0) {
-                // FZR can collapse identical player/offer requests submitted in the same instant.
-                await new Promise((resolve) => setTimeout(resolve, 1200));
-            }
-
-            const uniqueKey = `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
-            const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
-            results.push(result);
-            if (!result || result.success !== true) {
-                return { success: false, error: result?.error || "Instant delivery failed.", results };
-            }
-
-            if (!result.orderId) {
-                return { success: false, error: "FZR did not return an order ID. Delivery was not confirmed.", results };
-            }
-
-            if (providerOrderIds.has(String(result.orderId))) {
-                return { success: false, error: "FZR returned the same provider order for more than one cart item. Delivery was not confirmed.", results };
-            }
-
-            providerOrderIds.add(String(result.orderId));
-        }
-    }
-
-    return results.length === requestedUnits
-        ? { success: true, results }
-        : { success: false, error: "Not every cart item was sent to FZR.", results };
-}
-
 // =====================
 // 🟢 PROCESS WALLET PAYMENT
 // =====================
@@ -1869,43 +1547,35 @@ async function processWalletPayment(ctx, productInfo) {
         );
         return false;
     }
-    const isInstant = productInfo.type === "fzr_topup" || productInfo.type === "telegram_service";
+    const isInstant = productInfo.type === "ragner" || productInfo.product_type === "uc_instant";
     if (isInstant) {
         const orderRes = await db.query(
             `INSERT INTO orders 
-            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id, user_inputs)
-            VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7, $8)
+            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, player_id)
+            VALUES ($1, $2, $3, $4, $5, 'PENDING', 'wallet', $6, $7)
             RETURNING id`,
-            [userId, ctx.from.username || null, productInfo.name, productInfo.price, productInfo.type === "fzr_topup" ? "fzr" : "telegram", productInfo.type === "fzr_topup" ? JSON.stringify({ category_id: productInfo.categoryId, offer_id: productInfo.offerId }) : JSON.stringify({ type: productInfo.product_type, value: productInfo.offerId }), productInfo.playerId, JSON.stringify(productInfo.userInputs || {})]
+            [userId, ctx.from.username || null, productInfo.name, productInfo.price, "ragner", productInfo.productId, productInfo.playerId]
         );
         const orderId = orderRes.rows[0].id;
 
         await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Purchase: ${productInfo.name}`);
 
-        let deliveryResult;
-        if (productInfo.type === "fzr_topup") {
-            deliveryResult = await deliverInstantCartItems(productInfo, productInfo.playerId);
-        } else if (productInfo.type === "telegram_service") {
-            deliveryResult = productInfo.product_type === "telegram_stars"
-                ? await createTelegramStarsOrder(productInfo.playerId || ctx.from.username || `@${ctx.from.username || userId}`, productInfo.offerId || 1)
-                : await createTelegramPremiumOrder(productInfo.playerId || ctx.from.username || `@${ctx.from.username || userId}`, productInfo.offerId || 1);
-        }
-
+        const deliveryResult = await createOrder(productInfo.productId, productInfo.playerId);
         if (deliveryResult && deliveryResult.success) {
             await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
-            await safeEdit(ctx, `✅ PAYMENT SUCCESSFUL!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🎮 Order #${orderId} completed!`, []);
+            await safeEdit(ctx, `✅ PAYMENT SUCCESSFUL!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🎮 Order #${orderId} completed! UC delivered.`, []);
             await ctx.telegram.sendMessage(
                 process.env.ADMIN_ID,
-                `🟢 WALLET PURCHASE (AUTO-COMPLETED & DELIVERED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n✅ Auto-completed from wallet balance.`
+                `🟢 WALLET PURCHASE (AUTO-COMPLETED & DELIVERED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n✅ Auto-completed from wallet balance, UC delivered.`
             );
             setTimeout(() => showMainMenu(ctx), 2000);
         } else {
             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
-            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} is queued for instant delivery retry.\n\nYou will be notified as soon as the provider completes it.`, []);
+            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} pending manual delivery.\n\nYou will be notified when completed.`, []);
             await ctx.telegram.sendMessage(
                 process.env.ADMIN_ID,
-                `🔴 WALLET PURCHASE (INSTANT DELIVERY RETRY REQUIRED)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ The provider rejected or could not process the order.`,
-                { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Instant Delivery", callback_data: `retry_instant_${orderId}` }]] } }
+                `🟡 WALLET PURCHASE (PENDING MANUAL DELIVERY)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order ID: #${orderId}\n⚠️ Auto-delivery failed. Please complete manually.`,
+                { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
             );
             setTimeout(() => showMainMenu(ctx), 3000);
         }
@@ -2482,259 +2152,6 @@ async function showProductsByCategory(ctx, categoryId) {
     }
 }
 
-function getFzrTopupCategoryName(categoryName, categoryId = "") {
-    const name = `${String(categoryName || "")} ${String(categoryId || "")}`.toLowerCase();
-    if (["1", "pubg", "pubg_mobile", "pubg_mobile_auto"].includes(String(categoryId).toLowerCase())) return "pubg";
-    if (["2", "freefire", "free_fire", "free_fire_latam", "free_fire_mena"].includes(String(categoryId).toLowerCase())) return "free_fire";
-    if (["3", "bloodstrike", "blood_strike"].includes(String(categoryId).toLowerCase())) return "blood_strike";
-    if (["5", "telegram", "telegram_stars", "telegram_premium"].includes(String(categoryId).toLowerCase())) return "telegram";
-    if (name.includes("pubg")) return "pubg";
-    if (name.includes("free fire") || name.includes("free_fire") || name.includes("freefire")) return "free_fire";
-    if (name.includes("delta")) return "delta_force";
-    if (name.includes("blood")) return "blood_strike";
-    if (name.includes("telegram")) return "telegram";
-    return null;
-}
-
-function getInstantProductEmoji(categoryId, categoryName = "", productLabel = "") {
-    const label = String(productLabel || "").toLowerCase();
-    const categoryKey = getFzrTopupCategoryName(categoryName, categoryId);
-    const modeKey = label === "uc"
-        ? "instant_uc"
-        : label === "wow"
-            ? "instant_wow"
-            : label === "special"
-                ? "instant_special"
-                : null;
-
-    return (modeKey && getEmoji("system", modeKey))
-        || (categoryKey && getEmoji("system", `instant_category_${categoryKey}`))
-        || getEmoji("category", categoryId)
-        || null;
-}
-
-async function getFzrTopupMenuForCategory(categoryName) {
-    const categoryKey = getFzrTopupCategoryName(categoryName);
-    const data = await getTopupCategories(100);
-    const items = Array.isArray(data.items) ? data.items : [];
-
-    if (!categoryKey || items.length === 0) return [];
-
-    const filterMap = {
-        pubg: (value) => /pubg/i.test(value) && /(pubg_mobile_auto|auto|uc|wow|special|pack|battle|mobile)/i.test(value),
-        free_fire: (value) => /free fire|free_fire|garena/i.test(value) && /free_fire_(latam|mena)/i.test(value),
-        delta_force: (value) => /(?:^|\s)delta_force(?:\s|$)/i.test(value) && !/garena|indonesia|malaysia|\(my\)/i.test(value),
-        blood_strike: (value) => /(?:^|\s)blood_strike(?:\s|$)/i.test(value) && !/mena/i.test(value),
-        telegram: (value) => /telegram/i.test(value),
-    };
-
-    const predicate = filterMap[categoryKey] || (() => true);
-    const filtered = items.filter((item) => {
-        const label = `${item.name || ""} ${item.category_id || ""}`;
-        return predicate(label);
-    });
-
-    return filtered.slice(0, 12).map((item) => ({
-        id: item.category_id,
-        name: item.name || item.category_id,
-        label: item.name || item.category_id,
-    }));
-}
-
-async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
-    const key = getFzrTopupCategoryName(categoryName, categoryId);
-
-    if (key === "pubg") {
-        return showPubgGameMenu(ctx, categoryId, categoryName);
-    }
-
-    if (key === "telegram") {
-        return showTelegramGameMenu(ctx, categoryId, categoryName);
-    }
-
-    const items = await getFzrTopupMenuForCategory(categoryName);
-    if (!items.length) {
-        await safeEdit(ctx, "📭 No instant products available for this game right now.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
-        return;
-    }
-
-    const buttons = buildButtons(items.map((item) => {
-        const button = {
-            text: item.label,
-            callback_data: storeCallbackPayload(ctx.from.id, "fc", {
-                categoryId,
-                productCategoryId: item.id,
-                label: item.label,
-            }),
-        };
-        const emojiId = getEmoji("system", `instant_category_${String(item.id).toLowerCase()}`)
-            || getInstantProductEmoji(item.id, key, item.label);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        return button;
-    }));
-    buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
-    buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-
-    const titleMap = {
-        pubg: "⚡ PUBG Mobile Instant",
-        free_fire: "🔥 Free Fire Instant",
-        delta_force: "🔫 Delta Force Instant",
-        blood_strike: "💥 Blood Strike Instant",
-        telegram: "📱 Telegram Instant",
-    };
-
-    await safeEdit(ctx, `${titleMap[key] || "⚡ Instant Products"}\n\nSelect an instant category:`, buttons);
-}
-
-async function showPubgGameMenu(ctx, categoryId, categoryName) {
-    const makeButton = (text, callbackData, emojiKey) => {
-        const button = { text, callback_data: callbackData };
-        const emojiId = getEmoji("system", emojiKey);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        return button;
-    };
-    const buttons = [
-        [makeButton("⚡ UC", "pubg_instant_uc", "instant_uc")],
-        [makeButton("💎 WOW Coins", "pubg_instant_wow", "instant_wow")],
-        [makeButton("🎁 Special Packs", "pubg_instant_special", "instant_special")],
-        [makeButton("📦 Manual", "manual_pubg", "instant_manual")],
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
-    ];
-    await safeEdit(ctx, `⚡ ${categoryName || "PUBG Mobile"}\n\nChoose instant type:`, buttons);
-}
-
-async function showTelegramGameMenu(ctx, categoryId, categoryName) {
-    const makeButton = (text, callbackData, emojiKey) => {
-        const button = { text, callback_data: callbackData };
-        const emojiId = getEmoji("system", emojiKey);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        return button;
-    };
-    const buttons = [
-        [makeButton("⭐ Telegram Stars", "telegram_stars", "telegram_stars")],
-        [makeButton("👑 Telegram Premium", "telegram_premium", "telegram_premium")],
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
-    ];
-    await safeEdit(ctx, `📱 ${categoryName || "Telegram"}\n\nChoose Telegram service:`, buttons);
-}
-
-async function showTelegramOfferList(ctx, type) {
-    const data = type === "stars" ? await getTelegramStars() : await getTelegramPremium();
-
-    if (type === "stars") {
-        const pricePerStar = Number(data.price_per_star || 0);
-        const minAmount = Number(data.min_amount || 50);
-        const maxAmount = Number(data.max_amount || 10000);
-        const presets = [50, 100, 250, 500, 1000, 2500, 5000, 10000].filter((value) => value >= minAmount && value <= maxAmount);
-
-        if (!pricePerStar || !presets.length) {
-            await safeEdit(ctx, "📭 Telegram Stars pricing is currently unavailable. Please try again later.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
-            return;
-        }
-
-        const buttons = presets.map((value) => {
-            const price = pricePerStar * value;
-            return {
-                text: `${value} Stars`,
-                callback_data: storeCallbackPayload(ctx.from.id, "ts", {
-                    kind: "stars",
-                    label: "Telegram Stars",
-                    value,
-                    priceUsd: price,
-                }),
-            };
-        });
-
-        const pricedButtons = [];
-        for (const button of buttons) {
-            const payload = getCallbackPayload(ctx.from.id, button.callback_data);
-            const price = await calculateFzrPrice(payload.priceUsd, "telegram_stars", "Telegram Stars");
-            payload.priceEtb = price;
-            pricedButtons.push({ ...button, text: `${payload.value} Stars - ${price} ETB` });
-        }
-
-        const rows = buildButtons(pricedButtons);
-        rows.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
-        rows.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-        await safeEdit(ctx, `⭐ Telegram Stars\n\n${pricePerStar} USD per star\nChoose a star package:`, rows);
-        return;
-    }
-
-    const plans = Array.isArray(data.plans) ? data.plans : [];
-    if (!plans.length) {
-        await safeEdit(ctx, "📭 No Telegram Premium plans available right now.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
-        return;
-    }
-
-    const buttons = [];
-    for (const item of plans.slice(0, 18)) {
-        const rawPrice = Number(item.price_usd || item.price || item.amount_usd || item.cost_usd || 0);
-        const etb = await calculateFzrPrice(rawPrice, "telegram_premium", "Telegram Premium");
-        const value = Number(item.months || item.duration || 1);
-        const label = String(item.name || `Telegram Premium ${value} months`);
-        buttons.push({
-            text: `${label} - ${etb} ETB`,
-            callback_data: storeCallbackPayload(ctx.from.id, "tp", {
-                kind: "premium",
-                label,
-                value,
-                priceEtb: etb,
-            }),
-        });
-    }
-
-    const rows = buildButtons(buttons);
-    rows.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
-    rows.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-
-    await safeEdit(ctx, type === "stars" ? "⭐ Telegram Stars\n\nChoose a star package:" : "👑 Telegram Premium\n\nChoose a premium plan:", rows);
-}
-
-async function showFzrOfferList(ctx, categoryId, categoryName, productCategoryId, productLabel) {
-    const data = await getTopupOffers(productCategoryId || categoryId);
-    let offers = Array.isArray(data.offers) ? data.offers : [];
-    const mode = String(productLabel || "").toLowerCase();
-
-    if (mode === "uc") {
-        offers = offers.filter((offer) => /uc/i.test(String(offer.name || offer.title || offer.label || "")) && !/wow|coin|special|pack|bundle|deal/i.test(String(offer.name || offer.title || offer.label || "")));
-    } else if (mode === "wow") {
-        offers = offers.filter((offer) => /wow|coin|coins/i.test(String(offer.name || offer.title || offer.label || "")));
-    } else if (mode === "special") {
-        offers = offers.filter((offer) => /special|pack|bundle|deal|crate|chest|bonus/i.test(String(offer.name || offer.title || offer.label || "")) || (/pubg/i.test(String(offer.name || offer.title || offer.label || "")) && /pack/i.test(String(offer.name || offer.title || offer.label || ""))));
-    }
-
-    if (!offers.length) {
-        await safeEdit(ctx, "📭 No instant offers available for this option right now.", [[{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]]);
-        return;
-    }
-
-    const buttons = [];
-    for (const offer of offers.slice(0, 24)) {
-        const rawPrice = Number(offer.price_usd || offer.price || offer.amount_usd || 0);
-        const etb = await calculateFzrPrice(rawPrice, productCategoryId || categoryId, data.name || productLabel);
-        const label = String(offer.name || offer.title || offer.label || offer.offer_name || `Offer ${offer.offer_id || offer.id || ""}`);
-        const button = {
-            text: `${label} - ${etb} ETB`,
-            callback_data: storeCallbackPayload(ctx.from.id, "fo", {
-                categoryId,
-                productCategoryId,
-                offerId: String(offer.offer_id || offer.id || offer.offer_code || ""),
-                label,
-                priceEtb: etb,
-            }),
-        };
-        const emojiId = getInstantProductEmoji(categoryId, categoryName, productLabel);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        buttons.push(button);
-    }
-
-    const rows = buildButtons(buttons);
-    rows.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
-    rows.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
-
-    await safeEdit(ctx, `⚡ ${productLabel || categoryName}\n\nChoose one of the available instant offers:`, rows);
-}
-
 // =====================
 // 🟢 CALLBACK QUERY
 // =====================
@@ -2906,7 +2323,7 @@ bot.on("callback_query", async (ctx) => {
     }
     if (data === "show_games" || data === "🎮 Games") {
         pushHistory(userId, "main_menu");
-        const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND lower(replace(name, '_', '')) IN ('pubg', 'freefire', 'bloodstrike', 'deltaforce', 'telegram') ORDER BY position");
+        const gameCategories = await db.query("SELECT * FROM categories WHERE is_active=true AND name IN ('pubg', 'free_fire') ORDER BY position");
         const buttons = buildButtonsHorizontal(gameCategories.rows.map((g) => ({ text: g.display_name, callback_data: `cat_${g.id}` })));
         buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
         buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
@@ -2982,12 +2399,6 @@ bot.on("callback_query", async (ctx) => {
         const category = categoryResult.rows[0];
         if (!category) return ctx.reply("❌ Category not found.");
 
-        const categoryKey = getFzrTopupCategoryName(`${category.name || ""} ${category.display_name || ""}`, category.id);
-        if (categoryKey) {
-            pushHistory(userId, "categories");
-            return showFzrTopupCategoryMenu(ctx, `${category.name || ""} ${category.display_name || ""}`, categoryId);
-        }
-
         const subs = await db.query("SELECT * FROM subcategories WHERE category_id=$1 AND is_active=true ORDER BY position", [categoryId]);
         const buttons = buildButtons(
             subs.rows.map((s) => {
@@ -3013,189 +2424,6 @@ bot.on("callback_query", async (ctx) => {
         return;
     }
 
-    if (data.startsWith("fc")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
-        return showFzrOfferList(ctx, payload.productCategoryId, "Instant", payload.productCategoryId, payload.label);
-    }
-
-    if (data.startsWith("fo")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the product list again.");
-
-        const item = {
-            productId: payload.productCategoryId,
-            categoryId: payload.productCategoryId,
-            offerId: payload.offerId,
-            price: payload.priceEtb,
-            name: payload.label,
-            type: "fzr_topup",
-            product_type: "topup",
-            fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: "topup" },
-        };
-
-        const addResult = addItemToCart(userId, item, 1);
-        if (!addResult?.ok) {
-            return ctx.reply(addResult.message || "🛒 This item does not match your cart category.");
-        }
-
-        state.product = buildCartProductFromState(userId) || item;
-        state.step = "PLAYER";
-
-        return renderCartSummary(ctx, userId);
-    }
-
-    if (data.startsWith("ts") || data.startsWith("tp")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the Telegram list again.");
-        state.product = {
-            productId: payload.kind,
-            categoryId: payload.kind,
-            offerId: payload.value,
-            price: payload.priceEtb,
-            name: payload.label,
-            type: "telegram_service",
-            product_type: payload.kind === "stars" ? "telegram_stars" : "telegram_premium",
-            fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: payload.kind === "stars" ? "telegram_stars" : "telegram_premium" },
-        };
-        state.step = "PLAYER";
-        return ctx.reply("👤 Enter your Telegram username or phone number:\n\nExample: @username\n\nType /cancel to cancel", { parse_mode: "HTML" });
-    }
-
-    if (data === "cart_view") {
-        return renderCartSummary(ctx, userId);
-    }
-
-    if (data.startsWith("cart_inc_")) {
-        const index = Number(data.split("_").pop());
-        const cart = ensureCart(userId);
-        const item = cart[index];
-        if (!item) return renderCartSummary(ctx, userId);
-
-        item.quantity = Math.min(10, Number(item.quantity || 1) + 1);
-        item.total = Number(item.price || 0) * Number(item.quantity || 1);
-        return renderCartSummary(ctx, userId);
-    }
-
-    if (data.startsWith("cart_dec_")) {
-        const index = Number(data.split("_").pop());
-        const cart = ensureCart(userId);
-        const item = cart[index];
-        if (!item) return renderCartSummary(ctx, userId);
-
-        const nextQty = Number(item.quantity || 1) - 1;
-        if (nextQty <= 0) {
-            cart.splice(index, 1);
-            if (!cart.length) {
-                clearCart(userId);
-            }
-        } else {
-            item.quantity = nextQty;
-            item.total = Number(item.price || 0) * Number(item.quantity || 1);
-        }
-
-        return renderCartSummary(ctx, userId);
-    }
-
-    if (data === "cart_clear") {
-        clearCart(userId);
-        return renderCartSummary(ctx, userId);
-    }
-
-    if (data === "cart_checkout") {
-        const productInfo = buildCartProductFromState(userId);
-        if (!productInfo) {
-            return ctx.reply("🛒 Your cart is empty.");
-        }
-
-        state.product = productInfo;
-        state.step = "PLAYER";
-        const firstItem = productInfo.cartItems[0];
-        if (firstItem.type === "fzr_topup") {
-            return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
-        }
-        return ctx.reply("👤 Enter the required username or phone number for the cart checkout:\n\nType /cancel to cancel", { parse_mode: "HTML" });
-    }
-
-    if (data.startsWith("pw")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload?.productInfo) return ctx.reply("⚠️ This payment menu has expired. Please open it again.");
-        await processWalletPayment(ctx, {
-            ...payload.productInfo,
-            playerId: state.playerId,
-            playerName: state.playerName,
-            userInputs: state.collectedData,
-        });
-        return;
-    }
-
-    if (data.startsWith("pm")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload?.productInfo) return ctx.reply("⚠️ This payment menu has expired. Please open it again.");
-        const methods = await getPaymentMethods();
-        const selectedMethod = methods[Number(payload.methodIndex)];
-        if (!selectedMethod) return ctx.reply("❌ Payment method not found.");
-        userState[userId].productInfo = payload.productInfo;
-        await showPaymentDetails(ctx, selectedMethod, payload.productInfo);
-        return;
-    }
-
-    if (data.startsWith("fzr_topup_")) {
-        const parts = data.split("_");
-        const categoryId = parts[2];
-        const productCategoryId = parts[3];
-        const label = decodeURIComponent(parts.slice(4).join("_"));
-        return showFzrOfferList(ctx, categoryId, "Instant", productCategoryId, label || "Instant");
-    }
-
-    if (data === "manual_pubg") {
-        const categoryResult = await db.query("SELECT * FROM categories WHERE is_active = true AND lower(name) = 'pubg' LIMIT 1");
-        const category = categoryResult.rows[0];
-        if (!category) return ctx.reply("❌ PUBG category not found.");
-        return showProductsByCategory(ctx, category.id);
-    }
-
-    if (data === "pubg_instant_uc") {
-        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "uc");
-    }
-
-    if (data === "pubg_instant_wow") {
-        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "wow");
-    }
-
-    if (data === "pubg_instant_special") {
-        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "special");
-    }
-
-    if (data === "telegram_stars") {
-        return showTelegramOfferList(ctx, "stars");
-    }
-
-    if (data === "telegram_premium") {
-        return showTelegramOfferList(ctx, "premium");
-    }
-
-    if (data.startsWith("telegram_offer_")) {
-        const parts = data.split("_");
-        const kind = parts[2];
-        const label = decodeURIComponent(parts.slice(3, -2).join("_"));
-        const value = Number(parts[parts.length - 2]);
-        const price = Number(parts[parts.length - 1]);
-        const productInfo = {
-            productId: kind,
-            categoryId: kind,
-            offerId: value,
-            price,
-            name: `${label}${kind === "stars" ? ` ${value}` : ` ${value} months`}`,
-            type: "telegram_service",
-            product_type: kind === "stars" ? "telegram_stars" : "telegram_premium",
-            fullProduct: { name: `${label}${kind === "stars" ? ` ${value}` : ` ${value} months`}`, price_etb: price, product_type: kind === "stars" ? "telegram_stars" : "telegram_premium" },
-        };
-        state.product = productInfo;
-        state.step = "PLAYER";
-        return ctx.reply("👤 Enter your Telegram username or phone number:\n\nExample: @username\n\nType /cancel to cancel", { parse_mode: "HTML" });
-    }
-
     // ----- SUBCATEGORY -----
     if (data.startsWith("sub_")) {
         const [, subId, name] = data.split("_");
@@ -3209,31 +2437,20 @@ bot.on("callback_query", async (ctx) => {
 
         if (name === "instant" || name === "uc_instant") {
             state.mode = "instant";
-            return showPubgGameMenu(ctx, null, "PUBG Mobile");
+            return showRagnerProducts(ctx);
         }
 
         state.mode = "database";
         return showDatabaseProducts(ctx, subId);
     }
 
-    // ----- FZR PRODUCT -----
-    if (data.startsWith("fzr_offer_")) {
+    // ----- RAGNER PRODUCT -----
+    if (data.startsWith("ragner_")) {
         const parts = data.split("_");
-        const categoryId = parts[2];
-        const productCategoryId = parts[3];
-        const offerId = parts[4];
-        const label = decodeURIComponent(parts.slice(5, -1).join("_"));
-        const price = parseFloat(parts[parts.length - 1]);
-        const productInfo = {
-            productId: productCategoryId,
-            categoryId,
-            offerId,
-            price,
-            name: label,
-            type: "fzr_topup",
-            product_type: "topup",
-            fullProduct: { name: label, price_etb: price, product_type: "topup" },
-        };
+        const id = parts[1];
+        const price = parseFloat(parts[2]);
+        const name = parts.slice(3).join(" ");
+        const productInfo = { productId: id, price, name, type: "ragner", product_type: "uc_instant" };
         state.product = productInfo;
         state.step = "PLAYER";
         return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
@@ -3267,8 +2484,6 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("pay_wallet_")) {
         const productInfo = {
             productId: state.product.productId,
-            categoryId: state.product.categoryId,
-            offerId: state.product.offerId,
             price: state.product.price,
             name: state.product.name,
             playerId: state.playerId,
@@ -3309,8 +2524,6 @@ bot.on("callback_query", async (ctx) => {
     if (data.startsWith("unified_pay_wallet_")) {
         const productInfo = {
             productId: state.product.productId,
-            categoryId: state.product.categoryId,
-            offerId: state.product.offerId,
             price: state.product.price,
             name: state.product.name,
             playerId: state.playerId,
@@ -3383,19 +2596,15 @@ bot.on("callback_query", async (ctx) => {
     if (data === "confirm_yes") {
         if (state.product) {
             state.step = "PAYMENT_METHOD_SELECTION";
-            const cartItems = Array.isArray(state.product.cartItems) ? state.product.cartItems : null;
             const productInfo = {
                 productId: state.product.productId,
-                categoryId: state.product.categoryId,
-                offerId: state.product.offerId,
                 price: state.product.price,
                 name: state.product.name,
                 playerId: state.playerId,
                 playerName: state.playerName,
                 userInputs: state.collectedData,
                 type: state.product.type,
-                product_type: state.product.product_type,
-                cartItems,
+                product_type: state.product.product_type
             };
             return showPaymentOptions(ctx, productInfo);
         }
@@ -3498,12 +2707,9 @@ bot.on("callback_query", async (ctx) => {
             }
             let orderDetails = buildOrderDetails(order);
             await db.query("UPDATE orders SET status='APPROVED' WHERE id=$1", [orderId]);
-            if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
-                const fzrProduct = parseFzrOrderProduct(order);
-                const validation = order.delivery_type === "fzr"
-                    ? await validateFzrPlayer(fzrProduct.categoryId, order.player_id)
-                    : { success: true };
-                if (validation && !validation.success) {
+            if (order.delivery_type === "ragner") {
+                const validation = await validatePlayer(order.external_product_id, order.player_id);
+                if (!validation || !validation.success) {
                     try { await ctx.telegram.sendMessage(order.telegram_id, "⚠️ Payment approved but player validation failed. Contact support. @aman_jj", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
                     const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ STATUS: APPROVED (Validation Failed)\n❌ Auto-delivery unavailable. Please deliver manually.\n\n👇 Click "Complete" after manual delivery`;
@@ -3514,12 +2720,12 @@ bot.on("callback_query", async (ctx) => {
                     } catch (e) { console.error("Edit message error (approve order - validation failed):", e.message); }
                     return;
                 }
-                const result = await deliverStoredInstantOrder(order);
+                const result = await createOrder(order.external_product_id, order.player_id);
                 if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-                    try { await ctx.telegram.sendMessage(order.telegram_id, "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️", { parse_mode: "HTML" }); } catch (e) { }
+                    try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 UC Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
-                    const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n\nyour order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️`;
+                    const msg = `${orderDetails}\n━━━━━━━━━━━━━━━━━━━━\n✅ STATUS: COMPLETED\n🎮 UC Delivered Successfully!`;
                     try {
                         if (ctx.callbackQuery.message.photo) await ctx.editMessageCaption(msg);
                         else await ctx.editMessageText(msg);
@@ -3556,24 +2762,6 @@ bot.on("callback_query", async (ctx) => {
     }
 
     // ----- ADMIN: COMPLETE ORDER -----
-    if (data.startsWith("retry_instant_")) {
-        const orderId = data.split("_")[2];
-        const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
-        if (!order || (order.delivery_type !== "fzr" && order.delivery_type !== "telegram")) {
-            return ctx.reply("❌ Instant order not found.");
-        }
-        try {
-            const result = await deliverStoredInstantOrder(order);
-            if (!result.success) throw new Error(result.error || "Provider rejected the order");
-            await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
-            await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" });
-            return ctx.reply(`✅ Instant delivery completed for order #${orderId}.`);
-        } catch (error) {
-            console.error(`Instant retry failed for order #${orderId}:`, error.message);
-            return ctx.reply(`❌ Instant delivery failed: ${error.message}`);
-        }
-    }
-
     if (data.startsWith("complete_")) {
         const orderId = data.split("_")[1];
         if (processingOrders.has(`complete_${orderId}`)) {
@@ -3590,13 +2778,6 @@ bot.on("callback_query", async (ctx) => {
                 return;
             }
             let orderDetails = buildOrderDetails(order);
-            if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
-                const result = await deliverStoredInstantOrder(order);
-                if (!result.success) {
-                    processingOrders.delete(`complete_${orderId}`);
-                    return ctx.reply(`❌ Product was not delivered. Provider error: ${result.error || "Unknown error"}\n\nUse Retry Instant Delivery after correcting the order data.`);
-                }
-            }
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
             try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
             processingOrders.delete(`complete_${orderId}`);
@@ -3836,17 +3017,13 @@ bot.on("text", async (ctx) => {
         if (state.playerId && !extractedPlayerId) { extractedPlayerId = state.playerId; extractedPlayerName = state.playerName || null; }
 
         const productIdToInsert = product.type === "database" ? product.productId : null;
-        const externalProductId = product.type === "fzr_topup"
-            ? JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId, cart_items: product.cartItems || [] })
-            : product.type === "telegram_service"
-                ? JSON.stringify({ type: product.product_type, value: product.offerId })
-                : null;
+        const externalProductId = product.type === "ragner" ? product.productId : null;
 
         const orderResult = await db.query(
             `INSERT INTO orders (telegram_id, telegram_username, product_id, external_product_id, product_name, price_etb, delivery_type, status, payment_method, transaction_id, player_id, player_name, user_inputs)
              VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10, $11, $12) RETURNING id, created_at`,
             [userId, ctx.from.username || null, productIdToInsert, externalProductId,
-                product.name, product.price, product.type === "fzr_topup" ? "fzr" : product.type === "telegram_service" ? "telegram" : "manual", method.name,
+                product.name, product.price, "manual", method.name,
                 transferId, extractedPlayerId || null, extractedPlayerName || null,
                 JSON.stringify(userInputs)]
         );
@@ -3912,17 +3089,17 @@ bot.on("text", async (ctx) => {
 
             await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1, verified_by_shegerpay=true WHERE id=$2`, [transferId, orderId]);
 
-            const isInstant = product.type === "fzr_topup";
+            const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
 
             if (isInstant && externalProductId) {
                 // Attempt auto-delivery for instant products
                 try {
-                    const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
-                    if (fzrResult && fzrResult.success) {
+                    const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                    if (ragnerResult && ragnerResult.success) {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                                `✅ Payment verified!\n\nyour order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}`,
+                                `✅ Payment verified!\n\n🎮 UC Delivered Successfully!\n📦 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}`,
                                 { parse_mode: "HTML" });
                         } catch (e) { await ctx.reply(`✅ UC Delivered! Order #${orderId} completed.`, { parse_mode: "HTML" }); }
 
@@ -3945,8 +3122,8 @@ bot.on("text", async (ctx) => {
                             { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
                         );
                     }
-                } catch (fzrError) {
-                    console.error("eBirr FZR error:", fzrError.message);
+                } catch (ragnerError) {
+                    console.error("eBirr Ragner error:", ragnerError.message);
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                             `✅ Payment verified!\n\n📦 ${product.name}\n🧾 Order #${orderId}\n\nYour order is approved. You will be notified when delivered.`,
@@ -3954,7 +3131,7 @@ bot.on("text", async (ctx) => {
                     } catch (e) { }
 
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
-                        `🟡 ORDER #${orderId} verified (provider error: ${fzrError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
+                        `🟡 ORDER #${orderId} verified (Ragner error: ${ragnerError.message})\n👤 @${ctx.from.username || userId}\n📦 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}` +
                         buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
                         `\n\n👇 Click Complete after manual delivery.`,
                         { reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] } }
@@ -4340,7 +3517,7 @@ bot.on("text", async (ctx) => {
             extractedPlayerName = state.playerName || null;
         }
 
-        const externalProductId = product.type === "fzr_topup" ? product.productId : null;
+        const externalProductId = product.type === "ragner" ? product.productId : (product.ragner_product_id || null);
         const expectedRecipient = method?.account_number || null;
 
         const verifyingMsg = await ctx.reply("🔍 Verifying BOA payment...", { parse_mode: "HTML" });
@@ -4485,16 +3662,16 @@ bot.on("text", async (ctx) => {
 
         await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
 
-        const isInstant = product.type === "fzr_topup";
+        const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
 
         if (isInstant) {
             try {
-                const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
-                if (fzrResult && fzrResult.success) {
+                const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                if (ragnerResult && ragnerResult.success) {
                     await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                            "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n\n(BOA payment verified)", { parse_mode: "HTML" });
+                            "✅ UC Delivered Successfully! (BOA payment verified)", { parse_mode: "HTML" });
                     } catch (e) { }
                     await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                         `Order #${orderId} auto-completed (BOA verified)\n` +
@@ -4520,16 +3697,16 @@ bot.on("text", async (ctx) => {
                         reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
                     });
                 }
-            } catch (fzrError) {
+            } catch (ragnerError) {
                 await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                 try {
                     await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
                         "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                 } catch (e) { }
 
-                let adminMsg = `Order #${orderId} BOA payment verified (provider error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
+                let adminMsg = `Order #${orderId} BOA payment verified (Ragner error)\nUser: @${ctx.from.username || userId}\nProduct: ${product.name}\nAmount: ${product.price} ETB\nTransaction ID: ${extractedTxId}\nSender Account: ${senderAccount}` +
                     buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
-                    `\n\nProvider error: ${fzrError.message}\nClick "Complete" after manual delivery.`;
+                    `\n\nRagner error: ${ragnerError.message}\nClick "Complete" after manual delivery.`;
 
                 await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                     reply_markup: { inline_keyboard: [[{ text: "Complete Delivery", callback_data: `complete_${orderId}` }]] }
@@ -4561,23 +3738,27 @@ bot.on("text", async (ctx) => {
     const product = state.product?.fullProduct;
     if (!input) return ctx.reply("❌ Invalid input. Please try again.\n\nType /cancel to cancel");
 
-    const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant", "topup", "telegram_premium", "telegram_stars"];
+    const pubgTypes = ["free_fire", "uc_manual", "grospack", "subscription", "uc_instant"];
 
-    if (state.product?.type === "fzr_topup") {
+    if (state.product?.type === "ragner" || pubgTypes.includes(state.product?.product_type)) {
         state.playerId = input;
 
         try {
             const waitMsg = await ctx.reply("🔍 Verifying Player ID...");
 
             let validation;
-            validation = await validateFzrPlayer(state.product.productId, input);
+            if (state.product?.type === "ragner") {
+                validation = await validatePlayer(state.product.productId, input);
+            } else {
+                validation = await validatePlayerOnly(input);
+            }
 
             try { await ctx.telegram.deleteMessage(waitMsg.chat.id, waitMsg.message_id); } catch (e) { }
 
-            if (validation && !validation.success) {
+            if (!validation || !validation.success) {
                 return ctx.reply("❌ Invalid Player ID.\n\nPlayer not found. Please check and try again.\n\nType /cancel to cancel");
             }
-            state.playerName = validation?.data?.nickname || "Not verified";
+            state.playerName = validation.data?.nickname || "Unknown Player";
         } catch (error) {
             console.error("Validation error:", error);
             return ctx.reply("⏳ Service busy. Please try again in 2 minutes.\n\nType /cancel to cancel");
@@ -4594,18 +3775,6 @@ bot.on("text", async (ctx) => {
                     [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
                     [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }]
                 ]
-            },
-        });
-    } else if (state.product?.type === "telegram_service") {
-        state.playerId = input;
-        state.playerName = input;
-        state.step = "CONFIRM";
-        return ctx.reply(`✅ Username received\n\n👤 Telegram: ${input}\n\nIs this correct?`, {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "✅ Yes", callback_data: "confirm_yes" }, { text: "❌ No", callback_data: "confirm_no" }],
-                    [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }],
-                ],
             },
         });
     } else if (state.requiredFields && state.requiredFields.length > 0 && state.currentField !== undefined) {
@@ -4913,9 +4082,9 @@ bot.on("photo", async (ctx) => {
 
             let productIdToInsert = null;
             let externalProductId = null;
-            if (product.type === "fzr_topup") {
+            if (product.type === "ragner") {
                 productIdToInsert = null;
-                externalProductId = JSON.stringify({ category_id: product.categoryId, offer_id: product.offerId });
+                externalProductId = product.productId;
             } else {
                 productIdToInsert = product.productId;
                 externalProductId = null;
@@ -4936,7 +4105,7 @@ bot.on("photo", async (ctx) => {
                     product.price,
                     extractedPlayerId,
                     extractedPlayerName,
-                    product.type === "fzr_topup" ? "fzr" : "manual",
+                    product.type === "ragner" ? "ragner" : "manual",
                     fileId,
                     JSON.stringify(userInputs),
                 ]
@@ -5061,16 +4230,16 @@ bot.on("photo", async (ctx) => {
                     // All checks passed - APPROVE
                     await db.query(`UPDATE orders SET transaction_id = $1, verified_by_shegerpay = true WHERE id = $2`, [extractedTxId, orderId]);
 
-                    const isInstant = product.type === "fzr_topup";
+                    const isInstant = product.type === "ragner" || product.product_type === "uc_instant";
 
                     if (isInstant) {
                         try {
-                            const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
-                            if (fzrResult && fzrResult.success) {
+                            const ragnerResult = await createOrder(externalProductId, extractedPlayerId);
+                            if (ragnerResult && ragnerResult.success) {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
                                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
-                                        "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️\n\n(Payment auto-verified via OCR)", { parse_mode: "HTML" });
+                                        "🎮 UC Delivered Successfully! (Payment auto-verified via OCR)", { parse_mode: "HTML" });
                                 } catch (e) { }
                                 await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                                     `✅ Order #${orderId} auto-completed (Cloud Vision OCR)\n` +
@@ -5095,16 +4264,16 @@ bot.on("photo", async (ctx) => {
                                     reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
                                 });
                             }
-                        } catch (fzrError) {
+                        } catch (ragnerError) {
                             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
                             try {
                                 await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
                                     "✅ Payment verified!\n\nYour order has been approved. You will be notified when delivered.", { parse_mode: "HTML" });
                             } catch (e) { }
 
-                            let adminMsg = `🟡 Order #${orderId} payment verified (provider error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
+                            let adminMsg = `🟡 Order #${orderId} payment verified (Ragner error)\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\nTransaction ID: ${extractedTxId}` +
                                 buildCredentialsBlock(state.collectedData || state.userInputs, extractedPlayerId, extractedPlayerName) +
-                                `\n\n⚠️ Provider error: ${fzrError.message}\n👇 Click "Complete" after manual delivery.`;
+                                `\n\n⚠️ Ragner error: ${ragnerError.message}\n👇 Click "Complete" after manual delivery.`;
 
                             await ctx.telegram.sendMessage(process.env.ADMIN_ID, adminMsg, {
                                 reply_markup: { inline_keyboard: [[{ text: "🎮 Complete Delivery", callback_data: `complete_${orderId}` }]] }
