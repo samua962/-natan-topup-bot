@@ -1078,7 +1078,7 @@ async function deliverStoredInstantOrder(order) {
         const cartItems = product.cartItems.length
             ? product.cartItems
             : [{ categoryId: product.categoryId, offerId: product.offerId, quantity: 1, name: order.product_name }];
-        return deliverInstantCartItems({ cartItems }, fields.player_id);
+        return deliverInstantCartItems({ cartItems }, fields.player_id, order.id);
     }
     if (order.delivery_type === "telegram") {
         const username = order.player_id || fields.telegram_username || fields.username;
@@ -1803,7 +1803,26 @@ Type /cancel to cancel.
     }
 }
 
-async function deliverInstantCartItems(productInfo, playerId) {
+async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
+    if (orderId) {
+        const claim = await db.query(
+            `UPDATE orders
+             SET status = 'DELIVERING'
+             WHERE id = $1 AND status IN ('PENDING', 'APPROVED')
+             RETURNING id`,
+            [orderId]
+        );
+
+        if (claim.rows.length === 0) {
+            const current = await db.query("SELECT status FROM orders WHERE id = $1", [orderId]);
+            if (current.rows[0]?.status === "COMPLETED" || current.rows[0]?.status === "DELIVERING") {
+                console.warn(`[FZR] Skipping duplicate delivery attempt for order #${orderId} (status=${current.rows[0].status})`);
+                return { success: true, skipped: true, results: [] };
+            }
+            return { success: false, error: `Order #${orderId} could not be claimed for delivery.` };
+        }
+    }
+
     const cartItems = Array.isArray(productInfo?.cartItems) && productInfo.cartItems.length > 0
         ? productInfo.cartItems
         : [{
@@ -1884,7 +1903,7 @@ async function processWalletPayment(ctx, productInfo) {
 
         let deliveryResult;
         if (productInfo.type === "fzr_topup") {
-            deliveryResult = await deliverInstantCartItems(productInfo, productInfo.playerId);
+            deliveryResult = await deliverInstantCartItems(productInfo, productInfo.playerId, orderId);
         } else if (productInfo.type === "telegram_service") {
             deliveryResult = productInfo.product_type === "telegram_stars"
                 ? await createTelegramStarsOrder(productInfo.playerId || ctx.from.username || `@${ctx.from.username || userId}`, productInfo.offerId || 1)
@@ -3111,10 +3130,30 @@ bot.on("callback_query", async (ctx) => {
         state.product = productInfo;
         state.step = "PLAYER";
         const firstItem = productInfo.cartItems[0];
-        if (firstItem.type === "fzr_topup") {
-            return ctx.reply("<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel", { parse_mode: "HTML" });
+        const prompt = firstItem.type === "fzr_topup"
+            ? "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel"
+            : "👤 Enter the required username or phone number for the cart checkout:\n\nType /cancel to cancel";
+
+        try {
+            const cartMessage = state.cartMessage;
+            if (cartMessage?.chatId && cartMessage?.messageId) {
+                await ctx.telegram.editMessageText(
+                    cartMessage.chatId,
+                    cartMessage.messageId,
+                    undefined,
+                    prompt,
+                    { parse_mode: "HTML" }
+                );
+                return;
+            }
+
+            await ctx.editMessageText(prompt, { parse_mode: "HTML" });
+            return;
+        } catch (error) {
+            console.warn("Could not edit cart checkout message; sending prompt instead:", error.message);
         }
-        return ctx.reply("👤 Enter the required username or phone number for the cart checkout:\n\nType /cancel to cancel", { parse_mode: "HTML" });
+
+        return ctx.reply(prompt, { parse_mode: "HTML" });
     }
 
     if (data.startsWith("pw")) {
@@ -3917,7 +3956,7 @@ bot.on("text", async (ctx) => {
             if (isInstant && externalProductId) {
                 // Attempt auto-delivery for instant products
                 try {
-                    const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
+                    const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
                     if (fzrResult && fzrResult.success) {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         try {
@@ -4489,7 +4528,7 @@ bot.on("text", async (ctx) => {
 
         if (isInstant) {
             try {
-                const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
+                const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
                 if (fzrResult && fzrResult.success) {
                     await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                     try {
@@ -5065,7 +5104,7 @@ bot.on("photo", async (ctx) => {
 
                     if (isInstant) {
                         try {
-                            const fzrResult = await deliverInstantCartItems(product, extractedPlayerId);
+                            const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
                             if (fzrResult && fzrResult.success) {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
