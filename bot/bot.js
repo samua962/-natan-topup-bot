@@ -1702,6 +1702,31 @@ async function showBankTransferMethods(ctx, productInfo) {
 // =====================
 // 🟢 SHOW PAYMENT DETAILS
 // =====================
+async function replacePaymentMessage(ctx, text, photoUrl = null) {
+    try {
+        if (ctx.callbackQuery && ctx.callbackQuery.message) {
+            if (photoUrl) {
+                await ctx.editMessageMedia(
+                    { type: "photo", media: photoUrl, caption: text, parse_mode: "HTML" }
+                );
+            } else if (ctx.callbackQuery.message.photo) {
+                await ctx.editMessageCaption(text, { parse_mode: "HTML" });
+            } else {
+                await ctx.editMessageText(text, { parse_mode: "HTML" });
+            }
+            return;
+        }
+    } catch (err) {
+        // fall back to a fresh message below
+    }
+
+    if (photoUrl) {
+        await ctx.replyWithPhoto(photoUrl, { caption: text, parse_mode: "HTML" });
+    } else {
+        await ctx.reply(text, { parse_mode: "HTML" });
+    }
+}
+
 async function showPaymentDetails(ctx, paymentMethod, productInfo) {
     const userId = ctx.from.id;
     if (!userState[userId]) userState[userId] = {};
@@ -1738,19 +1763,19 @@ async function showPaymentDetails(ctx, paymentMethod, productInfo) {
 📌 ምሳሌ: <code>12345</code>
 
 Type /cancel to cancel.`;
-        await ctx.reply(msg, { parse_mode: "HTML" });
+        await replacePaymentMessage(ctx, msg);
         return;
     }
 
     if (provider === "cbebirr") {
         userState[userId].step = "AWAITING_CBEBIRR_PHONE";
-        await ctx.reply(
+        await replacePaymentMessage(
+            ctx,
             `📦 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n\n` +
             `🏦 ${paymentMethod.name}\n📞 Account: ${paymentMethod.account_number}\n👤 Name: ${paymentMethod.account_name || "N/A"}\n\n` +
             `Send EXACTLY ${productInfo.price} ETB, then send the phone number used to make the CBE Birr payment.\n\n` +
             `📱 Example: <code>0912345678</code> or <code>+251912345678</code>\n\n` +
-            `Type /cancel to cancel.`,
-            { parse_mode: "HTML" }
+            `Type /cancel to cancel.`
         );
         return;
     }
@@ -1797,9 +1822,9 @@ Type /cancel to cancel.
     userState[userId].step = "PAYMENT_SMS_WAITING";
 
     if (paymentMethod.image_url && paymentMethod.image_url.trim() !== "") {
-        await ctx.replyWithPhoto(paymentMethod.image_url, { caption: shortCaption, parse_mode: "HTML" });
+        await replacePaymentMessage(ctx, shortCaption, paymentMethod.image_url);
     } else {
-        await ctx.reply(shortCaption, { parse_mode: "HTML" });
+        await replacePaymentMessage(ctx, shortCaption);
     }
 }
 
