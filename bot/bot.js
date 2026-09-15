@@ -1828,6 +1828,33 @@ Type /cancel to cancel.
     }
 }
 
+// Claims one unit of an order's cart for delivery. Returns false if that exact
+// unit was already claimed by a previous (possibly duplicate) delivery attempt.
+async function claimDeliveryUnit(orderId, unitIndex, categoryId, offerId) {
+    try {
+        const res = await db.query(
+            `INSERT INTO fzr_delivery_units (order_id, unit_index, category_id, offer_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (order_id, unit_index) DO NOTHING
+             RETURNING id`,
+            [orderId, unitIndex, categoryId, offerId]
+        );
+        return res.rows.length > 0;
+    } catch (err) {
+        console.error(`[FZR] claimDeliveryUnit error for order #${orderId} unit ${unitIndex}:`, err.message);
+        // Ledger unavailable — fail open so instant delivery isn't blocked entirely.
+        return true;
+    }
+}
+
+async function releaseDeliveryUnit(orderId, unitIndex) {
+    try {
+        await db.query("DELETE FROM fzr_delivery_units WHERE order_id = $1 AND unit_index = $2", [orderId, unitIndex]);
+    } catch (err) {
+        console.error(`[FZR] releaseDeliveryUnit error for order #${orderId} unit ${unitIndex}:`, err.message);
+    }
+}
+
 async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
     if (orderId) {
         const claim = await db.query(
@@ -1848,6 +1875,19 @@ async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
         }
     }
 
+    const result = await deliverCartItemsUnitAware(productInfo, playerId, orderId);
+
+    if (orderId && !result.success) {
+        // Don't leave the order stuck at DELIVERING forever — allow a future retry.
+        // Units already claimed/delivered are recorded in fzr_delivery_units and
+        // will be skipped (not re-sent) on that retry.
+        await db.query("UPDATE orders SET status = 'APPROVED' WHERE id = $1 AND status = 'DELIVERING'", [orderId]).catch(() => {});
+    }
+
+    return result;
+}
+
+async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
     const cartItems = Array.isArray(productInfo?.cartItems) && productInfo.cartItems.length > 0
         ? productInfo.cartItems
         : [{
@@ -1860,6 +1900,9 @@ async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
     const results = [];
     const providerOrderIds = new Set();
     const requestedUnits = cartItems.reduce((total, item) => total + Math.max(1, Number(item.quantity || 1)), 0);
+    let unitIndex = 0;
+    let skippedUnits = 0;
+
     for (const item of cartItems) {
         const categoryId = item.categoryId || productInfo?.categoryId;
         const offerId = item.offerId || item.productId || productInfo?.offerId || productInfo?.productId;
@@ -1870,6 +1913,18 @@ async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
         }
 
         for (let index = 0; index < quantity; index += 1) {
+            const currentUnit = unitIndex;
+            unitIndex += 1;
+
+            if (orderId) {
+                const claimed = await claimDeliveryUnit(orderId, currentUnit, categoryId, offerId);
+                if (!claimed) {
+                    console.warn(`[FZR] Unit ${currentUnit} for order #${orderId} was already delivered by a previous attempt; skipping.`);
+                    skippedUnits += 1;
+                    continue;
+                }
+            }
+
             if (results.length > 0) {
                 // FZR can collapse identical player/offer requests submitted in the same instant.
                 await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -1877,24 +1932,28 @@ async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
 
             const uniqueKey = `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
             const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
-            results.push(result);
+
             if (!result || result.success !== true) {
+                if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
                 return { success: false, error: result?.error || "Instant delivery failed.", results };
             }
 
             if (!result.orderId) {
+                if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
                 return { success: false, error: "FZR did not return an order ID. Delivery was not confirmed.", results };
             }
 
             if (providerOrderIds.has(String(result.orderId))) {
+                if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
                 return { success: false, error: "FZR returned the same provider order for more than one cart item. Delivery was not confirmed.", results };
             }
 
             providerOrderIds.add(String(result.orderId));
+            results.push(result);
         }
     }
 
-    return results.length === requestedUnits
+    return (results.length + skippedUnits) === requestedUnits
         ? { success: true, results }
         : { success: false, error: "Not every cart item was sent to FZR.", results };
 }
