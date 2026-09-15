@@ -200,10 +200,16 @@ function buildIdempotencyKey(bank, transactionId, requestBody) {
  * @param {string} [opts.apiKey]            - x-api-key header value
  * @returns {Promise<Object|null>}          - Terminal poll body, or null on timeout
  */
+// eBirr Kaafi's own backend can sit in "queued" far longer than other banks
+// (observed 60s+ with no terminal status), so give it a longer poll budget.
+const POLL_MAX_ATTEMPTS_BY_BANK = {
+    kaafiebirr: 40, // ~40 attempts × 3s ≈ 2 minutes
+};
+const DEFAULT_POLL_MAX_ATTEMPTS = 20; // ~20 attempts × 3s ≈ 60s — enough for CBE etc.
+
 async function pollVerification(requestId, opts = {}) {
-    const { pollAfterMs = 1500, apiKey } = opts;
-    // 20 attempts × ~3s average = ~60s total — enough for slow banks like CBE
-    const MAX_ATTEMPTS = 20;
+    const { pollAfterMs = 1500, apiKey, bank } = opts;
+    const MAX_ATTEMPTS = POLL_MAX_ATTEMPTS_BY_BANK[bank] || DEFAULT_POLL_MAX_ATTEMPTS;
 
     const pollHeaders = { "Content-Type": "application/json" };
     if (apiKey) pollHeaders["x-api-key"] = apiKey;
@@ -419,7 +425,7 @@ async function verifyPaymentWithVerifyEt(bank, transactionId, expectedAmount, op
             }
 
             if (res.status === 202) {
-                return await handleAsyncResponse(res.data, expectedAmount, apiKey);
+                return await handleAsyncResponse(res.data, expectedAmount, apiKey, bank);
             }
 
             // Unexpected 2xx — treat as an error
@@ -620,7 +626,7 @@ async function handleSyncResponse(envelope, expectedAmount) {
  * Handles an asynchronous HTTP 202 response from Verify.ET.
  * Extracts requestId, polls until terminal, then validates.
  */
-async function handleAsyncResponse(data, expectedAmount, apiKey) {
+async function handleAsyncResponse(data, expectedAmount, apiKey, bank) {
     // Extract requestId — either directly or from a statusUrl / links.statusUrl
     let requestId = data.requestId || data.id;
     if (!requestId && (data.statusUrl || data.links?.statusUrl)) {
@@ -640,14 +646,15 @@ async function handleAsyncResponse(data, expectedAmount, apiKey) {
     const pollAfterMs = data.links?.pollAfterMs
         || (typeof data.pollAfterMs === "number" ? data.pollAfterMs : 2000);
 
-    console.log(`[verify-et] Queued — requestId=${requestId} pollAfterMs=${pollAfterMs}`);
+    console.log(`[verify-et] Queued — requestId=${requestId} pollAfterMs=${pollAfterMs} bank=${bank || "unknown"}`);
 
-    const result = await pollVerification(requestId, { pollAfterMs, apiKey });
+    const result = await pollVerification(requestId, { pollAfterMs, apiKey, bank });
 
     if (!result) {
         return {
             verified: false,
             error: "Verification timed out. Your payment is being reviewed.",
+            requestId,
         };
     }
 

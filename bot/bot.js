@@ -4106,6 +4106,7 @@ bot.on("text", async (ctx) => {
 
             await ctx.telegram.sendMessage(process.env.ADMIN_ID,
                 `📥 NEW ORDER (Manual Review)\n\n👤 User: @${ctx.from.username || userId}\n📦 Product: ${product.name}\n💰 Amount: ${product.price} ETB\n🧾 Order ID: #${orderId}\n💳 Method: ${method.name}\n🔍 TX ID: ${transferId}\n❌ Error: ${verification.error || "Not found"}` +
+                (verification.requestId ? `\n🆔 Verify.ET Request ID: ${verification.requestId}` : "") +
                 buildCredentialsBlock(state.collectedData || userInputs, extractedPlayerId, extractedPlayerName) +
                 `\n\nUse buttons below to manage:`,
                 { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `approve_${orderId}` }, { text: "❌ Reject", callback_data: `reject_${orderId}` }]] } }
