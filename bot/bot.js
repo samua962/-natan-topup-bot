@@ -349,9 +349,16 @@ function extractSmsPaymentReference(providerCode, rawText) {
 
     // CBE Birr SMS messages contain a transaction ID without a URL.
     if (bank === "cbebirr") {
-        const transactionMatch = smsText.match(/\b(?:DH[A-Z]|FT)[A-Z0-9]{4,30}\b/i);
-        if (transactionMatch?.[0]) {
-            return { bank, reference: transactionMatch[0].trim(), mode: "transaction_id" };
+        // CBE Birr SMS formats vary: some label the ID, while others only
+        // include the familiar DH/FT reference token.
+        const labeledTransactionMatch = smsText.match(
+            /(?:transaction\s*(?:id|no|number|reference)|receipt\s*(?:id|no|number))\s*(?:is|:|-)?\s*([A-Z0-9][A-Z0-9-]{3,39})/i
+        );
+        const transactionMatch = labeledTransactionMatch
+            || smsText.match(/\b(?:DH|FT)[A-Z0-9]{4,30}\b/i);
+        if (transactionMatch) {
+            const reference = labeledTransactionMatch ? transactionMatch[1] : transactionMatch[0];
+            return { bank, reference: reference.trim(), mode: "transaction_id" };
         }
         return { bank, reference: null, mode: "transaction_id" };
     }
