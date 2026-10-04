@@ -1085,7 +1085,7 @@ async function deliverStoredInstantOrder(order) {
         const cartItems = product.cartItems.length
             ? product.cartItems
             : [{ categoryId: product.categoryId, offerId: product.offerId, quantity: 1, name: order.product_name }];
-        return deliverInstantCartItems({ cartItems }, fields.player_id, order.id);
+        return deliverInstantCartItems({ cartItems, price: Number(order.price_etb) }, fields.player_id, order.id);
     }
     if (order.delivery_type === "telegram") {
         const username = order.player_id || fields.telegram_username || fields.username;
@@ -1862,7 +1862,40 @@ async function releaseDeliveryUnit(orderId, unitIndex) {
     }
 }
 
+function validateFzrCartTotal(productInfo) {
+    const cartItems = productInfo?.cartItems;
+    const paidAmount = Number(productInfo?.price);
+    if (!Array.isArray(cartItems) || cartItems.length === 0 || !Number.isFinite(paidAmount)) return null;
+
+    let cartTotal = 0;
+    let requestedUnits = 0;
+    for (const item of cartItems) {
+        const quantity = Math.max(1, Number(item.quantity || 1));
+        const unitPrice = Number(item.price);
+        if (!Number.isInteger(quantity)) return "Cart quantity is invalid; delivery was stopped.";
+        requestedUnits += quantity;
+        if (Number.isFinite(unitPrice) && unitPrice > 0) {
+            cartTotal += unitPrice * quantity;
+        } else if (requestedUnits <= 1 && Number.isFinite(Number(item.total)) && Number(item.total) > 0) {
+            cartTotal += Number(item.total);
+        } else {
+            return "Cart pricing is incomplete; delivery was stopped to prevent sending more items than paid for.";
+        }
+    }
+
+    if (Math.abs(cartTotal - paidAmount) > 0.01) {
+        return `Cart total (${cartTotal.toFixed(2)} ETB) does not match paid order amount (${paidAmount.toFixed(2)} ETB); delivery was stopped.`;
+    }
+    return null;
+}
+
 async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
+    const cartError = validateFzrCartTotal(productInfo);
+    if (cartError) {
+        console.error(`[FZR] Refusing delivery for order #${orderId || "unknown"}: ${cartError}`);
+        return { success: false, error: cartError };
+    }
+
     if (orderId) {
         const claim = await db.query(
             `UPDATE orders
@@ -1937,7 +1970,9 @@ async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
                 await new Promise((resolve) => setTimeout(resolve, 1200));
             }
 
-            const uniqueKey = `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
+            const uniqueKey = orderId
+                ? `fzr-bot-order-${orderId}-unit-${currentUnit}`
+                : `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
             const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
 
             if (!result || result.success !== true) {
@@ -3720,13 +3755,6 @@ bot.on("callback_query", async (ctx) => {
                 return;
             }
             let orderDetails = buildOrderDetails(order);
-            if (order.delivery_type === "fzr" || order.delivery_type === "telegram") {
-                const result = await deliverStoredInstantOrder(order);
-                if (!result.success) {
-                    processingOrders.delete(`complete_${orderId}`);
-                    return ctx.reply(`❌ Product was not delivered. Provider error: ${result.error || "Unknown error"}\n\nUse Retry Instant Delivery after correcting the order data.`);
-                }
-            }
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
             try { await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" }); } catch (e) { }
             processingOrders.delete(`complete_${orderId}`);
