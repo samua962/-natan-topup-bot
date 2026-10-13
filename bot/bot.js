@@ -2630,7 +2630,7 @@ async function showProductsByCategory(ctx, categoryId) {
 function getFzrTopupCategoryName(categoryName, categoryId = "") {
     const name = `${String(categoryName || "")} ${String(categoryId || "")}`.toLowerCase();
     if (["1", "pubg", "pubg_mobile", "pubg_mobile_auto"].includes(String(categoryId).toLowerCase())) return "pubg";
-    if (["2", "freefire", "free_fire", "free_fire_latam", "free_fire_mena"].includes(String(categoryId).toLowerCase())) return "free_fire";
+    if (["2", "freefire", "free_fire", "free_fire_mena"].includes(String(categoryId).toLowerCase())) return "free_fire";
     if (["3", "bloodstrike", "blood_strike"].includes(String(categoryId).toLowerCase())) return "blood_strike";
     if (["5", "telegram", "telegram_stars", "telegram_premium"].includes(String(categoryId).toLowerCase())) return "telegram";
     if (name.includes("pubg")) return "pubg";
@@ -2667,7 +2667,7 @@ async function getFzrTopupMenuForCategory(categoryName) {
 
     const filterMap = {
         pubg: (value) => /pubg/i.test(value) && /(pubg_mobile_auto|auto|uc|wow|special|pack|battle|mobile)/i.test(value),
-        free_fire: (value) => /free fire|free_fire|garena/i.test(value) && /free_fire_(latam|mena)/i.test(value),
+        free_fire: (value) => /free fire|free_fire|garena/i.test(value) && /free_fire_mena/i.test(value),
         delta_force: (value) => /(?:^|\s)delta_force(?:\s|$)/i.test(value) && !/garena|indonesia|malaysia|\(my\)/i.test(value),
         blood_strike: (value) => /(?:^|\s)blood_strike(?:\s|$)/i.test(value) && !/mena/i.test(value),
         telegram: (value) => /telegram/i.test(value),
