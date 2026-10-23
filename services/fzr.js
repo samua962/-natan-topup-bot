@@ -234,6 +234,62 @@ async function createTelegramPremiumOrder(telegramUsername, months) {
   };
 }
 
+/**
+ * Create a gift card order via FZR.
+ * @param {string} categoryId  - FZR gift card category_id
+ * @param {string} offerId     - FZR offer_id
+ * @param {Object} [fields]    - optional extra fields (e.g. { email })
+ * @param {string} [idempotencyKey]
+ */
+async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotencyKey = null) {
+  if (!FZR_API_KEY) {
+    return {
+      success: true,
+      data: { ok: true, order: { id: `MOCK_GC_${Date.now()}`, status: "processing" } },
+      orderId: `MOCK_GC_${Date.now()}`,
+      code: null,
+    };
+  }
+
+  const normalizedCategoryId = String(categoryId || "").trim();
+  const normalizedOfferId = String(offerId || "").trim();
+  if (!normalizedCategoryId || !normalizedOfferId) {
+    return { success: false, error: "Missing FZR gift card category_id or offer_id" };
+  }
+
+  const payload = {
+    category_id: normalizedCategoryId,
+    offer_id: normalizedOfferId,
+    fields,
+  };
+
+  const requestHeaders = {};
+  if (idempotencyKey) requestHeaders["Idempotency-Key"] = idempotencyKey;
+
+  console.log(`[FZR] POST /giftcards/order category_id=${normalizedCategoryId} offer_id=${normalizedOfferId}`);
+
+  const res = await fzrPost("/giftcards/order", payload, requestHeaders);
+
+  if (!res || res.ok === false) {
+    return { success: false, error: res?.error || "FZR gift card order failed", details: res };
+  }
+
+  const orderId = res.order?.id || res.id || res.order_id || null;
+  // Some gift card providers return the card code / serial in the response
+  const code = res.order?.code || res.code || res.serial || res.card_code || null;
+  const pin  = res.order?.pin  || res.pin  || null;
+
+  console.log(`[FZR] Gift card delivered category_id=${normalizedCategoryId} offer_id=${normalizedOfferId} order_id=${orderId || "unknown"}`);
+
+  return {
+    success: res.ok === true || Boolean(res.order),
+    data: res,
+    orderId,
+    code,
+    pin,
+  };
+}
+
 module.exports = {
   BASE_URL,
   getTopupCategories,
@@ -246,6 +302,7 @@ module.exports = {
   getTelegramPremium,
   validatePlayer,
   createTopupOrder,
+  createGiftCardOrder,
   createTelegramStarsOrder,
   createTelegramPremiumOrder,
 };

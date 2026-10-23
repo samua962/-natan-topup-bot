@@ -13,6 +13,9 @@ const {
     getTelegramPremium,
     createTelegramStarsOrder,
     createTelegramPremiumOrder,
+    getGiftCardCategories,
+    getGiftCardOffers,
+    createGiftCardOrder,
 } = require("../services/fzr");
 const FormData = require("form-data");
 const { resolveVerifyEtBank, verifyPaymentWithVerifyEt } = require("../services/verify-et");
@@ -65,11 +68,13 @@ function resolveCartCategory(item = {}) {
     if (raw.includes("free_fire") || raw.includes("freefire") || raw.includes("garena")) return "free_fire";
     if (raw.includes("delta") || raw.includes("delta_force")) return "delta_force";
     if (raw.includes("blood") || raw.includes("blood_strike")) return "blood_strike";
+    if (raw.includes("genshin")) return "genshin_impact";
     if (raw.includes("telegram") || item.product_type === "telegram_stars" || item.product_type === "telegram_premium") return "telegram";
     if (item.type === "telegram_service") return "telegram";
-    if (item.type === "fzr_topup") return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "instant";
+    if (item.type === "gift_card") return "gift_card";
+    if (item.type === "fzr_topup") return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : raw.includes("genshin") ? "genshin_impact" : "instant";
 
-    return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : "general";
+    return raw.includes("free_fire") ? "free_fire" : raw.includes("pubg") ? "pubg" : raw.includes("genshin") ? "genshin_impact" : "general";
 }
 
 function ensureCart(userId) {
@@ -179,7 +184,9 @@ function getCartCategoryLabel(category) {
         free_fire: "Free Fire",
         delta_force: "Delta Force",
         blood_strike: "Blood Strike",
+        genshin_impact: "Genshin Impact",
         telegram: "Telegram",
+        gift_card: "Gift Card",
         instant: "Instant",
         general: "General",
     };
@@ -242,7 +249,7 @@ async function renderCartSummary(ctx, userId) {
                     };
                 }
                 return true;
-            } catch (err) {}
+            } catch (err) { }
         }
 
         const sent = await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
@@ -1921,7 +1928,7 @@ async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
         // Don't leave the order stuck at DELIVERING forever — allow a future retry.
         // Units already claimed/delivered are recorded in fzr_delivery_units and
         // will be skipped (not re-sent) on that retry.
-        await db.query("UPDATE orders SET status = 'APPROVED' WHERE id = $1 AND status = 'DELIVERING'", [orderId]).catch(() => {});
+        await db.query("UPDATE orders SET status = 'APPROVED' WHERE id = $1 AND status = 'DELIVERING'", [orderId]).catch(() => { });
     }
 
     return result;
@@ -2055,6 +2062,53 @@ async function processWalletPayment(ctx, productInfo) {
             setTimeout(() => showMainMenu(ctx), 3000);
         }
         return true;
+        // ----- GIFT CARD: AUTO-DELIVER VIA FZR -----
+    } else if (productInfo.type === "gift_card") {
+        const orderRes = await db.query(
+            `INSERT INTO orders
+            (telegram_id, telegram_username, product_name, price_etb, delivery_type, status, payment_method, external_product_id, user_inputs)
+            VALUES ($1, $2, $3, $4, 'fzr_gift_card', 'PENDING', 'wallet', $5, $6)
+            RETURNING id`,
+            [
+                userId, ctx.from.username || null, productInfo.name, productInfo.price,
+                JSON.stringify({ category_id: productInfo.categoryId, offer_id: productInfo.offerId }),
+                JSON.stringify(productInfo.userInputs || {}),
+            ]
+        );
+        const orderId = orderRes.rows[0].id;
+        await updateWalletBalance(userId, productInfo.price, "PURCHASE", orderId, `Gift Card: ${productInfo.name}`);
+
+        const uniqueKey = `fzr-gc-${orderId}-${Date.now()}`;
+        const gcResult = await createGiftCardOrder(
+            productInfo.categoryId,
+            productInfo.offerId,
+            productInfo.userInputs || {},
+            uniqueKey
+        );
+
+        if (gcResult && gcResult.success) {
+            await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+            let successMsg = `✅ <b>Gift Card Delivered!</b>\n\n🎁 ${productInfo.name}\n💰 ${productInfo.price} ETB\n🧾 Order #${orderId}\n\n`;
+            if (gcResult.code) successMsg += `🔑 <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
+            if (gcResult.pin) successMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
+            if (!gcResult.code && !gcResult.pin) successMsg += `✅ Card processed. Check your email or contact support if not received.\n`;
+            successMsg += `\nThank you for your order! 🙏`;
+            await safeEdit(ctx, successMsg, [[{ text: "🏠 Main Menu", callback_data: "main_menu" }]]);
+            await ctx.telegram.sendMessage(
+                process.env.ADMIN_ID,
+                `🟢 GIFT CARD DELIVERED (WALLET)\n\n👤 User: @${ctx.from.username || userId}\n🎁 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order #${orderId}\n${gcResult.code ? `🔑 Code: ${gcResult.code}` : "✅ Delivered"}`
+            );
+        } else {
+            await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
+            await safeEdit(ctx, `✅ PAYMENT RECEIVED!\n\n🎁 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🔄 Order #${orderId} is being processed.\n\nYou will receive your gift card code shortly.`, []);
+            await ctx.telegram.sendMessage(
+                process.env.ADMIN_ID,
+                `🔴 GIFT CARD DELIVERY FAILED (WALLET)\n\n👤 User: @${ctx.from.username || userId}\n🎁 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order #${orderId}\n⚠️ Error: ${gcResult?.error || "Unknown"}`,
+                { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Gift Card", callback_data: `retry_gc_${orderId}` }]] } }
+            );
+            setTimeout(() => showMainMenu(ctx), 3000);
+        }
+        return true;
     } else {
         const result = await db.query(
             `INSERT INTO orders 
@@ -2089,64 +2143,32 @@ async function processWalletPayment(ctx, productInfo) {
 }
 
 // =====================
-// 🟢 SHOW MAIN MENU
+// 🟢 SHOW MAIN MENU (new structured layout)
 // =====================
 async function showMainMenu(ctx) {
     try {
-        const categories = await db.query(
-            "SELECT * FROM categories WHERE is_active=true AND name NOT IN ('channel', 'information', 'info') ORDER BY position"
-        );
-        const buttons = buildButtonsHorizontal(
-            categories.rows.map((c) => {
-                const btn = { text: c.display_name, callback_data: `cat_${c.id}` };
-                const emojiId = getEmoji('category', c.id);
-                if (emojiId) btn.icon_custom_emoji_id = emojiId;
-                return btn;
-            })
-        );
-
-        // System buttons with emoji IDs
-        const myOrdersBtn = { text: "My Orders", callback_data: "myorders_back" };
-        const myOrdersEmoji = getEmoji('system', 'orders');
-        if (myOrdersEmoji) myOrdersBtn.icon_custom_emoji_id = myOrdersEmoji;
-
-        const myWalletBtn = { text: "My Wallet", callback_data: "show_wallet" };
-        const myWalletEmoji = getEmoji('system', 'wallet');
-        if (myWalletEmoji) myWalletBtn.icon_custom_emoji_id = myWalletEmoji;
-
-        buttons.push([myOrdersBtn, myWalletBtn]);
-
-        const getTicketBtn = { text: "Get Ticket", callback_data: "giveaway_ticket" };
-        const ticketEmoji = getEmoji('system', 'ticket');
-        if (ticketEmoji) getTicketBtn.icon_custom_emoji_id = ticketEmoji;
-        buttons.push([getTicketBtn]);
-
-        const supportBtn = { text: "Support", callback_data: "support_menu" };
-        const supportEmoji = getEmoji('system', 'support');
-        if (supportEmoji) supportBtn.icon_custom_emoji_id = supportEmoji;
-
-        const channelBtn = { text: "Our Channel", url: `https://t.me/${process.env.CHANNEL_USERNAME?.replace("@", "") || "natan_topup"}` };
-        const channelEmoji = getEmoji('system', 'channel');
-        if (channelEmoji) channelBtn.icon_custom_emoji_id = channelEmoji;
-        buttons.push([supportBtn, channelBtn]);
-
-        const infoBtn = { text: "Info", callback_data: "info_menu" };
-        const infoEmoji = getEmoji('system', 'info');
-        if (infoEmoji) infoBtn.icon_custom_emoji_id = infoEmoji;
-
-        const helpBtn = { text: "Help", callback_data: "help_menu" };
-        const helpEmoji = getEmoji('system', 'help');
-        if (helpEmoji) helpBtn.icon_custom_emoji_id = helpEmoji;
-        buttons.push([infoBtn, helpBtn]);
-
         const mainMenuBanner = await getMainMenuBanner();
-        const caption = `🎮 Natan Top Up\n\n⚡ Fast • Secure • Reliable\n\nSelect a service below 👇`;
+        const caption = `🎮 <b>Nathan Top Up</b>\n\n⚡ Fast • Secure • Reliable\n\nChoose an option below 👇`;
+
+        const mkBtn = (text, data, key) => {
+            const btn = { text, callback_data: data };
+            const eid = getEmoji('system', key);
+            if (eid) btn.icon_custom_emoji_id = eid;
+            return btn;
+        };
+
+        const buttons = [
+            [mkBtn("Browse Products", "browse_products", "browse_products")],
+            [mkBtn("Order History", "myorders_back", "orders"),
+             mkBtn("Balance",       "show_wallet",   "wallet")],
+            [mkBtn("Support", "support_menu", "support")],
+        ];
 
         if (ctx.callbackQuery && ctx.callbackQuery.message) {
             await safeEditMedia(ctx, mainMenuBanner, caption, buttons);
         } else {
             await ctx.replyWithPhoto(mainMenuBanner, {
-                caption: caption,
+                caption,
                 parse_mode: "HTML",
                 reply_markup: { inline_keyboard: buttons }
             });
@@ -2154,6 +2176,180 @@ async function showMainMenu(ctx) {
     } catch (error) {
         console.error("Show main menu error:", error);
         await ctx.reply("⚠️ System error. Please try /start again.");
+    }
+}
+
+// =====================
+// 🟢 SHOW BROWSE PRODUCTS MENU
+// =====================
+async function showBrowseProducts(ctx) {
+    const mkBtn = (text, data, key) => {
+        const btn = { text, callback_data: data };
+        const eid = getEmoji('system', key);
+        if (eid) btn.icon_custom_emoji_id = eid;
+        return btn;
+    };
+    const buttons = [
+        [mkBtn("Games",                    "games_menu",          "menu_games")],
+        [mkBtn("Gift Cards",               "giftcards_menu",      "menu_giftcards")],
+        [mkBtn("Telegram Premium & Stars", "telegram_menu",       "telegram_premium")],
+        [mkBtn("Manual Top-ups",           "manual_topups_menu",  "menu_manual")],
+        [mkBtn("Main Menu",                "main_menu",           "main_menu_btn")],
+    ];
+    await safeEdit(ctx, "<b>Browse Products</b>\n\nSelect a category:", buttons);
+}
+
+// =====================
+// 🟢 SHOW GAMES MENU
+// =====================
+async function showGamesMenu(ctx) {
+    const mkBtn = (text, data, key) => {
+        const btn = { text, callback_data: data };
+        const eid = getEmoji('system', key);
+        if (eid) btn.icon_custom_emoji_id = eid;
+        return btn;
+    };
+    const buttons = [
+        [mkBtn("PUBG Mobile",    "game_pubg",           "game_pubg")],
+        [mkBtn("Free Fire",      "game_free_fire",      "game_free_fire")],
+        [mkBtn("Delta Force",    "game_delta_force",    "game_delta_force")],
+        [mkBtn("Blood Strike",   "game_blood_strike",   "game_blood_strike")],
+        [mkBtn("Genshin Impact", "game_genshin_impact", "game_genshin")],
+        [mkBtn("Back",      "browse_products", "back_btn"),
+         mkBtn("Main Menu", "main_menu",       "main_menu_btn")],
+    ];
+    await safeEdit(ctx, "<b>Games</b>\n\nSelect a game to top up:", buttons);
+}
+
+// =====================
+// 🟢 SHOW MANUAL TOPUPS MENU (routes to DB manual products)
+// =====================
+async function showManualTopupsMenu(ctx) {
+    try {
+        const categories = await db.query(
+            `SELECT * FROM categories WHERE is_active=true AND lower(name) NOT IN ('channel','information','info','telegram','pubg','freefire','free_fire','bloodstrike','blood_strike','deltaforce','delta_force','genshin','genshin_impact') ORDER BY position`
+        );
+        const backEid = getEmoji('system', 'back_btn');
+        const mainEid = getEmoji('system', 'main_menu_btn');
+        const buttons = buildButtons(
+            categories.rows.map((c) => {
+                const btn = { text: c.display_name, callback_data: `cat_${c.id}` };
+                const emojiId = getEmoji('category', c.id);
+                if (emojiId) btn.icon_custom_emoji_id = emojiId;
+                return btn;
+            })
+        );
+        const backBtn  = { text: "Back",      callback_data: "browse_products" };
+        const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+        if (backEid) backBtn.icon_custom_emoji_id = backEid;
+        if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
+        buttons.push([backBtn, mainBtn]);
+        await safeEdit(ctx, "<b>Manual Top-ups</b>\n\nSelect a product category:", buttons);
+    } catch (error) {
+        console.error("Manual topups menu error:", error);
+        await safeEdit(ctx, "⚠️ Error loading products.", [[{ text: "Main Menu", callback_data: "main_menu" }]]);
+    }
+}
+
+// =====================
+// 🟢 SHOW GIFT CARDS MENU
+// Gift card category IDs configured for the 5 supported cards.
+// =====================
+const GIFT_CARD_MENU = [
+    { label: "PlayStation (US)", categoryId: "playstation_us", emojiKey: "gc_playstation" },
+    { label: "Xbox (US)",        categoryId: "xbox_us",         emojiKey: "gc_xbox" },
+    { label: "iTunes (US)",      categoryId: "itunes_us",       emojiKey: "gc_itunes" },
+    { label: "Roblox (Global)",  categoryId: "roblox_global",   emojiKey: "gc_roblox" },
+    { label: "Google Play (US)", categoryId: "google_play_us",  emojiKey: "gc_google_play" },
+];
+
+async function showGiftCardsMenu(ctx) {
+    try {
+        // Fetch available gift card categories from FZR to map real category IDs
+        const data = await getGiftCardCategories(200);
+        const fzrItems = Array.isArray(data.items) ? data.items : [];
+
+        // Build keyword matchers for each card type
+        const matchers = [
+            { key: "playstation_us", test: (n) => /playstation/i.test(n) && /us|usd|united\s*states/i.test(n) },
+            { key: "xbox_us", test: (n) => /xbox/i.test(n) && /us|usd|united\s*states/i.test(n) },
+            { key: "itunes_us", test: (n) => /itunes|apple/i.test(n) && /us|usd|united\s*states/i.test(n) },
+            { key: "roblox_global", test: (n) => /roblox/i.test(n) },
+            { key: "google_play_us", test: (n) => /google\s*play/i.test(n) && /us|usd|united\s*states/i.test(n) },
+        ];
+
+        // Map friendly key → real FZR category_id
+        const resolvedIds = {};
+        for (const item of fzrItems) {
+            const label = `${item.name || ""} ${item.category_id || ""}`;
+            for (const m of matchers) {
+                if (!resolvedIds[m.key] && m.test(label)) {
+                    resolvedIds[m.key] = item.category_id;
+                }
+            }
+        }
+
+        const buttons = GIFT_CARD_MENU.map((card) => {
+            const realId = resolvedIds[card.categoryId] || card.categoryId;
+            const btn = {
+                text: card.label,
+                callback_data: storeCallbackPayload(ctx.from.id, "gc", { categoryId: realId, label: card.label }),
+            };
+            const eid = getEmoji('system', card.emojiKey);
+            if (eid) btn.icon_custom_emoji_id = eid;
+            return [btn];
+        });
+        const backEid = getEmoji('system', 'back_btn');
+        const mainEid = getEmoji('system', 'main_menu_btn');
+        const backBtn  = { text: "Back",      callback_data: "browse_products" };
+        const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+        if (backEid) backBtn.icon_custom_emoji_id = backEid;
+        if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
+        buttons.push([backBtn, mainBtn]);
+        await safeEdit(ctx, "<b>Gift Cards</b>\n\nSelect a gift card:", buttons);
+    } catch (error) {
+        console.error("Gift cards menu error:", error);
+        await safeEdit(ctx, "⚠️ Could not load gift cards right now.", [[{ text: "Main Menu", callback_data: "main_menu" }]]);
+    }
+}
+
+// =====================
+// 🟢 SHOW GIFT CARD OFFER LIST (FZR)
+// =====================
+async function showGiftCardOfferList(ctx, categoryId, label) {
+    try {
+        const data = await getGiftCardOffers(categoryId);
+        const offers = Array.isArray(data.offers) ? data.offers : [];
+
+        if (!offers.length) {
+            await safeEdit(ctx, `📭 No gift card offers available for <b>${label}</b> right now.`, [
+                [{ text: "◀️ Back", callback_data: "giftcards_menu" }],
+                [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+            ]);
+            return;
+        }
+
+        const buttons = [];
+        for (const offer of offers.slice(0, 24)) {
+            const rawPrice = Number(offer.price_usd || offer.price || offer.amount_usd || 0);
+            const etb = await calculateFzrPrice(rawPrice, categoryId, label);
+            const offerLabel = String(offer.name || offer.title || offer.label || offer.offer_name || `${label} ${offer.offer_id || offer.id || ""}`);
+            buttons.push([{
+                text: `${offerLabel} - ${etb} ETB`,
+                callback_data: storeCallbackPayload(ctx.from.id, "gco", {
+                    categoryId,
+                    offerId: String(offer.offer_id || offer.id || offer.offer_code || ""),
+                    label: offerLabel,
+                    priceEtb: etb,
+                }),
+            }]);
+        }
+        buttons.push([{ text: "◀️ Back", callback_data: "giftcards_menu" }]);
+        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+        await safeEdit(ctx, `🎁 <b>${label}</b>\n\nChoose a denomination:`, buttons);
+    } catch (error) {
+        console.error("Gift card offer list error:", error);
+        await safeEdit(ctx, "⚠️ Error loading gift card offers.", [[{ text: "🏠 Main Menu", callback_data: "main_menu" }]]);
     }
 }
 
@@ -2633,10 +2829,12 @@ function getFzrTopupCategoryName(categoryName, categoryId = "") {
     if (["2", "freefire", "free_fire", "free_fire_mena"].includes(String(categoryId).toLowerCase())) return "free_fire";
     if (["3", "bloodstrike", "blood_strike"].includes(String(categoryId).toLowerCase())) return "blood_strike";
     if (["5", "telegram", "telegram_stars", "telegram_premium"].includes(String(categoryId).toLowerCase())) return "telegram";
+    if (String(categoryId).toLowerCase().includes("genshin")) return "genshin_impact";
     if (name.includes("pubg")) return "pubg";
     if (name.includes("free fire") || name.includes("free_fire") || name.includes("freefire")) return "free_fire";
     if (name.includes("delta")) return "delta_force";
     if (name.includes("blood")) return "blood_strike";
+    if (name.includes("genshin")) return "genshin_impact";
     if (name.includes("telegram")) return "telegram";
     return null;
 }
@@ -2670,6 +2868,8 @@ async function getFzrTopupMenuForCategory(categoryName) {
         free_fire: (value) => /free fire|free_fire|garena/i.test(value) && /free_fire_mena/i.test(value),
         delta_force: (value) => /(?:^|\s)delta_force(?:\s|$)/i.test(value) && !/garena|indonesia|malaysia|\(my\)/i.test(value),
         blood_strike: (value) => /(?:^|\s)blood_strike(?:\s|$)/i.test(value) && !/mena/i.test(value),
+        // Genshin Impact: auto via login only (filter out global/non-login variants)
+        genshin_impact: (value) => /genshin/i.test(value) && /login|auto/i.test(value) && !/global/i.test(value),
         telegram: (value) => /telegram/i.test(value),
     };
 
@@ -2721,46 +2921,59 @@ async function showFzrTopupCategoryMenu(ctx, categoryName, categoryId) {
     buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
 
     const titleMap = {
-        pubg: "⚡ PUBG Mobile Instant",
-        free_fire: "🔥 Free Fire Instant",
-        delta_force: "🔫 Delta Force Instant",
-        blood_strike: "💥 Blood Strike Instant",
-        telegram: "📱 Telegram Instant",
+        pubg: " PUBG Mobile Instant",
+        free_fire: " Free Fire Instant",
+        delta_force: " Delta Force Instant",
+        blood_strike: " Blood Strike Instant",
+        telegram: " Telegram Instant",
     };
 
     await safeEdit(ctx, `${titleMap[key] || "⚡ Instant Products"}\n\nSelect an instant category:`, buttons);
 }
 
 async function showPubgGameMenu(ctx, categoryId, categoryName) {
-    const makeButton = (text, callbackData, emojiKey) => {
-        const button = { text, callback_data: callbackData };
-        const emojiId = getEmoji("system", emojiKey);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        return button;
+    const mkBtn = (text, data, key) => {
+        const btn = { text, callback_data: data };
+        const eid = getEmoji('system', key);
+        if (eid) btn.icon_custom_emoji_id = eid;
+        return btn;
     };
+    const backEid = getEmoji('system', 'back_btn');
+    const mainEid = getEmoji('system', 'main_menu_btn');
+    const backBtn  = { text: "Back",      callback_data: "games_menu" };
+    const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+    if (backEid) backBtn.icon_custom_emoji_id = backEid;
+    if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
     const buttons = [
-        [makeButton("⚡ UC", "pubg_instant_uc", "instant_uc")],
-        [makeButton("💎 WOW Coins", "pubg_instant_wow", "instant_wow")],
-        [makeButton("🎁 Special Packs", "pubg_instant_special", "instant_special")],
-        [makeButton("📦 Manual", "manual_pubg", "instant_manual")],
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
+        [mkBtn("UC",               "pubg_instant_uc",           "instant_uc")],
+        [mkBtn("WOW Coins",        "pubg_instant_wow",          "instant_wow")],
+        [mkBtn("Gross Pack",       "pubg_instant_grosspack",    "pubg_grosspack")],
+        [mkBtn("Subscription",     "pubg_instant_subscription", "pubg_subscription")],
+        [mkBtn("Weekly Deal Pack", "pubg_instant_weekly",       "pubg_weekly")],
+        [backBtn, mainBtn],
     ];
-    await safeEdit(ctx, `⚡ ${categoryName || "PUBG Mobile"}\n\nChoose instant type:`, buttons);
+    await safeEdit(ctx, `<b>${categoryName || "PUBG Mobile"}</b>\n\nChoose top-up type:`, buttons);
 }
 
 async function showTelegramGameMenu(ctx, categoryId, categoryName) {
-    const makeButton = (text, callbackData, emojiKey) => {
-        const button = { text, callback_data: callbackData };
-        const emojiId = getEmoji("system", emojiKey);
-        if (emojiId) button.icon_custom_emoji_id = emojiId;
-        return button;
+    const mkBtn = (text, data, key) => {
+        const btn = { text, callback_data: data };
+        const eid = getEmoji('system', key);
+        if (eid) btn.icon_custom_emoji_id = eid;
+        return btn;
     };
+    const backEid = getEmoji('system', 'back_btn');
+    const mainEid = getEmoji('system', 'main_menu_btn');
+    const backBtn  = { text: "Back",      callback_data: "back" };
+    const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+    if (backEid) backBtn.icon_custom_emoji_id = backEid;
+    if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
     const buttons = [
-        [makeButton("⭐ Telegram Stars", "telegram_stars", "telegram_stars")],
-        [makeButton("👑 Telegram Premium", "telegram_premium", "telegram_premium")],
-        [{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }, { text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }],
+        [mkBtn("Telegram Stars",   "telegram_stars",   "telegram_stars")],
+        [mkBtn("Telegram Premium", "telegram_premium", "telegram_premium")],
+        [backBtn, mainBtn],
     ];
-    await safeEdit(ctx, `📱 ${categoryName || "Telegram"}\n\nChoose Telegram service:`, buttons);
+    await safeEdit(ctx, `<b>${categoryName || "Telegram"}</b>\n\nChoose Telegram service:`, buttons);
 }
 
 async function showTelegramOfferList(ctx, type) {
@@ -2841,11 +3054,35 @@ async function showFzrOfferList(ctx, categoryId, categoryName, productCategoryId
     const mode = String(productLabel || "").toLowerCase();
 
     if (mode === "uc") {
-        offers = offers.filter((offer) => /uc/i.test(String(offer.name || offer.title || offer.label || "")) && !/wow|coin|special|pack|bundle|deal/i.test(String(offer.name || offer.title || offer.label || "")));
+        offers = offers.filter((offer) => {
+            const n = String(offer.name || offer.title || offer.label || "");
+            return /\buc\b/i.test(n) && !/wow|coin|pack|bundle|deal|royale|prime|weekly|gross|growth|subscription/i.test(n);
+        });
     } else if (mode === "wow") {
         offers = offers.filter((offer) => /wow|coin|coins/i.test(String(offer.name || offer.title || offer.label || "")));
+    } else if (mode === "grosspack") {
+        // Growth/Gross Packs: royale pass bundles, growth packs, monthly cards
+        offers = offers.filter((offer) => {
+            const n = String(offer.name || offer.title || offer.label || "");
+            return /gross|growth|royale|monthly|classic|elite|rename\s*card/i.test(n)
+                && !/weekly|wow|coin|uc\b|subscription|prime/i.test(n);
+        });
+    } else if (mode === "subscription") {
+        // Prime Pass / Prime Plus subscriptions
+        offers = offers.filter((offer) => {
+            const n = String(offer.name || offer.title || offer.label || "");
+            return /prime|subscription|pass|plus|premium|member/i.test(n)
+                && !/wow|coin|uc\b|weekly/i.test(n);
+        });
+    } else if (mode === "weekly") {
+        // Weekly Deal / Weekly Card
+        offers = offers.filter((offer) => {
+            const n = String(offer.name || offer.title || offer.label || "");
+            return /weekly/i.test(n);
+        });
     } else if (mode === "special") {
-        offers = offers.filter((offer) => /special|pack|bundle|deal|crate|chest|bonus/i.test(String(offer.name || offer.title || offer.label || "")) || (/pubg/i.test(String(offer.name || offer.title || offer.label || "")) && /pack/i.test(String(offer.name || offer.title || offer.label || ""))));
+        // legacy fallback (kept for backward compat)
+        offers = offers.filter((offer) => /special|pack|bundle|deal|crate|chest|bonus/i.test(String(offer.name || offer.title || offer.label || "")));
     }
 
     if (!offers.length) {
@@ -2910,19 +3147,103 @@ bot.on("callback_query", async (ctx) => {
         return showMainMenu(ctx);
     }
 
+    // ----- BROWSE PRODUCTS -----
+    if (data === "browse_products") {
+        pushHistory(userId, "main_menu");
+        return showBrowseProducts(ctx);
+    }
+
+    // ----- GAMES MENU -----
+    if (data === "games_menu") {
+        pushHistory(userId, "browse_products");
+        return showGamesMenu(ctx);
+    }
+
+    // ----- GIFT CARDS MENU -----
+    if (data === "giftcards_menu") {
+        pushHistory(userId, "browse_products");
+        return showGiftCardsMenu(ctx);
+    }
+
+    // ----- TELEGRAM MENU (from Browse Products) -----
+    if (data === "telegram_menu") {
+        pushHistory(userId, "browse_products");
+        return showTelegramGameMenu(ctx, "telegram", "Telegram");
+    }
+
+    // ----- MANUAL TOPUPS MENU -----
+    if (data === "manual_topups_menu") {
+        pushHistory(userId, "browse_products");
+        return showManualTopupsMenu(ctx);
+    }
+
+    // ----- INDIVIDUAL GAME SELECTIONS -----
+    if (data === "game_pubg") {
+        pushHistory(userId, "games_menu");
+        return showPubgGameMenu(ctx, null, "PUBG Mobile");
+    }
+    if (data === "game_free_fire") {
+        pushHistory(userId, "games_menu");
+        return showFzrOfferList(ctx, "free_fire", "Free Fire", "free_fire_mena", "Free Fire");
+    }
+    if (data === "game_delta_force") {
+        pushHistory(userId, "games_menu");
+        return showFzrTopupCategoryMenu(ctx, "delta_force", "delta_force");
+    }
+    if (data === "game_blood_strike") {
+        pushHistory(userId, "games_menu");
+        return showFzrTopupCategoryMenu(ctx, "blood_strike", "blood_strike");
+    }
+    if (data === "game_genshin_impact") {
+        pushHistory(userId, "games_menu");
+        return showFzrTopupCategoryMenu(ctx, "genshin_impact", "genshin_impact");
+    }
+
+    // ----- GIFT CARD CATEGORY (from storeCallbackPayload) -----
+    if (data.startsWith("gc")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
+        pushHistory(userId, "giftcards_menu");
+        return showGiftCardOfferList(ctx, payload.categoryId, payload.label);
+    }
+
+    // ----- GIFT CARD OFFER SELECTED -----
+    if (data.startsWith("gco")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the gift card list again.");
+
+        const item = {
+            productId: payload.categoryId,
+            categoryId: payload.categoryId,
+            offerId: payload.offerId,
+            price: payload.priceEtb,
+            name: payload.label,
+            type: "gift_card",
+            product_type: "gift_card",
+            fullProduct: { name: payload.label, price_etb: payload.priceEtb, product_type: "gift_card" },
+        };
+
+        state.product = item;
+        state.step = "CONFIRM";
+
+        const confirmMsg = `✅ <b>Confirm Your Order</b>\n\n🎁 Product: ${payload.label}\n💰 Price: ${payload.priceEtb} ETB\n\nProceed to payment?`;
+        return safeEdit(ctx, confirmMsg, [
+            [{ text: "✅ Yes, Pay Now", callback_data: "confirm_yes" }, { text: "❌ Cancel", callback_data: "cancel_order" }],
+        ]);
+    }
+
     // ----- BACK BUTTON -----
     if (data === "back") {
         const prev = getPreviousScreen(userId);
         if (prev) {
             popHistory(userId);
 
-            if (prev.screen === "categories") {
-                return showCategories(ctx);
-            }
+            if (prev.screen === "browse_products") return showBrowseProducts(ctx);
+            if (prev.screen === "games_menu") return showGamesMenu(ctx);
+            if (prev.screen === "giftcards_menu") return showGiftCardsMenu(ctx);
+            if (prev.screen === "categories") return showCategories(ctx);
             if (prev.screen === "products") {
-                if (prev.data?.subId) {
-                    return showDatabaseProducts(ctx, prev.data.subId);
-                }
+                if (prev.data?.subId) return showDatabaseProducts(ctx, prev.data.subId);
             }
             if (prev.screen === "subcategories") {
                 if (prev.data?.categoryId) {
@@ -2942,8 +3263,8 @@ bot.on("callback_query", async (ctx) => {
                                 callback_data: `sub_${s.id}_${s.name}`
                             }))
                         );
-                        buttons.push([{ text: "Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
-                        buttons.push([{ text: "Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
+                        buttons.push([{ text: "◀️ Back", callback_data: "back", icon_custom_emoji_id: "4949575790002963745" }]);
+                        buttons.push([{ text: "🏠 Main Menu", callback_data: "main_menu", icon_custom_emoji_id: "5438499684270238914" }]);
 
                         const categoryImage = category.image_url || "https://assets-prd.ignimgs.com/2025/07/16/25-best-ps5-games-blogroll-1752704467824.jpg";
                         const caption = `📂 ${category.display_name}\n\nSelect an option below 👇`;
@@ -3328,6 +3649,19 @@ bot.on("callback_query", async (ctx) => {
         return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "wow");
     }
 
+    if (data === "pubg_instant_grosspack") {
+        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "grosspack");
+    }
+
+    if (data === "pubg_instant_subscription") {
+        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "subscription");
+    }
+
+    if (data === "pubg_instant_weekly") {
+        return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "weekly");
+    }
+
+    // Legacy special packs (kept for any old inline menus still in chats)
     if (data === "pubg_instant_special") {
         return showFzrOfferList(ctx, "pubg", "PUBG Mobile", "pubg_mobile_auto", "special");
     }
@@ -3798,6 +4132,32 @@ bot.on("callback_query", async (ctx) => {
         }
         return;
     }
+
+    // ----- ADMIN: RETRY GIFT CARD DELIVERY -----
+    if (data.startsWith("retry_gc_")) {
+        const orderId = data.split("_")[2];
+        try { await ctx.answerCbQuery("Retrying gift card delivery..."); } catch (e) { }
+        try {
+            const order = (await db.query("SELECT * FROM orders WHERE id=$1", [orderId])).rows[0];
+            if (!order) { await ctx.reply("❌ Order not found"); return; }
+            const gcInfo = JSON.parse(order.external_product_id || "{}");
+            const gcResult = await createGiftCardOrder(gcInfo.category_id, gcInfo.offer_id, {}, `fzr-gc-retry-${orderId}-${Date.now()}`);
+            if (gcResult && gcResult.success) {
+                await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                let msg = `✅ Gift card delivered!\n\n🎁 ${order.product_name}\n🧾 Order #${orderId}\n`;
+                if (gcResult.code) msg += `🔑 Code: ${gcResult.code}\n`;
+                if (gcResult.pin) msg += `🔐 PIN: ${gcResult.pin}\n`;
+                try { await ctx.telegram.sendMessage(order.telegram_id, msg, { parse_mode: "HTML" }); } catch (e) { }
+                try { await ctx.editMessageText(`✅ GIFT CARD DELIVERED\n\n${msg}`); } catch (e) { await ctx.reply(`✅ Gift card delivered: Order #${orderId}`); }
+            } else {
+                await ctx.reply(`❌ Gift card retry failed: ${gcResult?.error || "Unknown error"}`);
+            }
+        } catch (error) {
+            console.error("Retry gift card error:", error);
+            await ctx.reply(`❌ Error retrying gift card: ${error.message}`);
+        }
+        return;
+    }
 });
 
 // =====================
@@ -4063,16 +4423,58 @@ bot.on("text", async (ctx) => {
             if (raceCheck.rows.length > 0) {
                 await db.query("UPDATE orders SET status='REJECTED', note='Duplicate transaction' WHERE id=$1", [orderId]);
                 delete userState[userId];
-                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    "⚠️ This transaction ID has already been used for another order.\n\nPlease make a new payment.", { parse_mode: "HTML" }); } catch (e) { }
+                try {
+                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                        "⚠️ This transaction ID has already been used for another order.\n\nPlease make a new payment.", { parse_mode: "HTML" });
+                } catch (e) { }
                 return;
             }
 
             await db.query(`UPDATE orders SET status='APPROVED', transaction_id=$1, verified_by_shegerpay=true WHERE id=$2`, [transferId, orderId]);
 
             const isInstant = product.type === "fzr_topup";
+            const isGiftCard = product.type === "gift_card";
 
-            if (isInstant && externalProductId) {
+            if (isGiftCard && externalProductId) {
+                // Auto-deliver gift card via FZR
+                try {
+                    const gcInfo = JSON.parse(externalProductId);
+                    const gcResult = await createGiftCardOrder(gcInfo.category_id, gcInfo.offer_id, {}, `fzr-gc-bank-${orderId}`);
+                    if (gcResult && gcResult.success) {
+                        await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
+                        let deliveryMsg = `✅ Payment verified!\n\n🎁 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\n`;
+                        if (gcResult.code) deliveryMsg += `🔑 <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
+                        if (gcResult.pin) deliveryMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
+                        if (!gcResult.code && !gcResult.pin) deliveryMsg += `✅ Card processed. Check your email or contact support.\n`;
+                        try {
+                            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, deliveryMsg, { parse_mode: "HTML" });
+                        } catch (e) { await ctx.reply(deliveryMsg, { parse_mode: "HTML" }); }
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                            `🟢 GIFT CARD DELIVERED (BANK)\n👤 @${ctx.from.username || userId}\n🎁 ${product.name}\n💰 ${product.price} ETB\n💳 ${method.name}\n🔑 TX: ${transferId}${gcResult.code ? `\n🎁 Code: ${gcResult.code}` : ""}`
+                        );
+                    } else {
+                        try {
+                            await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                                `✅ Payment verified!\n\n🎁 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\n⚠️ Auto-delivery failed. Your gift card will be sent shortly.`,
+                                { parse_mode: "HTML" });
+                        } catch (e) { }
+                        await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                            `🔴 GIFT CARD DELIVERY FAILED (BANK)\n👤 @${ctx.from.username || userId}\n🎁 ${product.name}\n💰 ${product.price} ETB\n🧾 #${orderId}\n⚠️ ${gcResult?.error || "Unknown"}`,
+                            { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Gift Card", callback_data: `retry_gc_${orderId}` }]] } }
+                        );
+                    }
+                } catch (gcError) {
+                    console.error("Gift card delivery error:", gcError.message);
+                    try {
+                        await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                            `✅ Payment verified!\n\n🎁 ${product.name}\n🧾 Order #${orderId}\n\nYour gift card will be delivered shortly.`, { parse_mode: "HTML" });
+                    } catch (e) { }
+                    await ctx.telegram.sendMessage(process.env.ADMIN_ID,
+                        `🔴 GIFT CARD ERROR (BANK)\n👤 @${ctx.from.username || userId}\n🎁 ${product.name}\n🧾 #${orderId}\n⚠️ ${gcError.message}`,
+                        { reply_markup: { inline_keyboard: [[{ text: "🔄 Retry Gift Card", callback_data: `retry_gc_${orderId}` }]] } }
+                    );
+                }
+            } else if (isInstant && externalProductId) {
                 // Attempt auto-delivery for instant products
                 try {
                     const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
@@ -4263,8 +4665,10 @@ bot.on("text", async (ctx) => {
             if (raceCheckDep.rows.length > 0 || raceCheckOrdDep.rows.length > 0) {
                 await db.query("UPDATE deposit_requests SET status='REJECTED' WHERE id=$1", [depositId]);
                 delete userState[userId];
-                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
-                    "⚠️ This transaction ID has already been used for a previous payment.", { parse_mode: "HTML" }); } catch (e) { }
+                try {
+                    await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
+                        "⚠️ This transaction ID has already been used for a previous payment.", { parse_mode: "HTML" });
+                } catch (e) { }
                 return;
             }
 
