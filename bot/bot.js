@@ -3211,15 +3211,7 @@ bot.on("callback_query", async (ctx) => {
         return showFzrTopupCategoryMenu(ctx, "genshin_impact", "genshin_impact");
     }
 
-    // ----- GIFT CARD CATEGORY (from storeCallbackPayload) -----
-    if (data.startsWith("gc")) {
-        const payload = getCallbackPayload(userId, data);
-        if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
-        pushHistory(userId, "giftcards_menu");
-        return showGiftCardOfferList(ctx, payload.categoryId, payload.label);
-    }
-
-    // ----- GIFT CARD OFFER SELECTED -----
+    // ----- GIFT CARD OFFER SELECTED ----- (must be checked BEFORE "gc" to avoid prefix clash)
     if (data.startsWith("gco")) {
         const payload = getCallbackPayload(userId, data);
         if (!payload) return ctx.reply("⚠️ This offer has expired. Please open the gift card list again.");
@@ -3242,6 +3234,14 @@ bot.on("callback_query", async (ctx) => {
         return safeEdit(ctx, confirmMsg, [
             [{ text: "✅ Yes, Pay Now", callback_data: "confirm_yes" }, { text: "❌ Cancel", callback_data: "cancel_order" }],
         ]);
+    }
+
+    // ----- GIFT CARD CATEGORY (from storeCallbackPayload) -----
+    if (data.startsWith("gc")) {
+        const payload = getCallbackPayload(userId, data);
+        if (!payload) return ctx.reply("⚠️ This menu has expired. Please open it again.");
+        pushHistory(userId, "giftcards_menu");
+        return showGiftCardOfferList(ctx, payload.categoryId, payload.label);
     }
 
     // ----- BACK BUTTON -----
