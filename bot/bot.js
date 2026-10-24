@@ -1980,7 +1980,21 @@ async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
             const uniqueKey = orderId
                 ? `fzr-bot-order-${orderId}-unit-${currentUnit}`
                 : `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
-            const result = await createTopupOrder(categoryId, offerId, { player_id: playerId }, uniqueKey);
+
+            // Build FZR fields — always include player_id; merge any extra credentials
+            // (e.g. email + password for Genshin Impact login/auto delivery)
+            const userInputs = productInfo?.userInputs || {};
+            const fzrFields = { player_id: playerId };
+            if (userInputs.email) fzrFields.email = userInputs.email;
+            if (userInputs.password) fzrFields.password = userInputs.password;
+            if (userInputs.uid && userInputs.uid !== playerId) fzrFields.uid = userInputs.uid;
+            // forward any other custom fields the FZR API may require
+            const reservedKeys = new Set(["player_id", "email", "password", "uid", "player_name"]);
+            for (const [k, v] of Object.entries(userInputs)) {
+                if (!reservedKeys.has(k) && v) fzrFields[k] = v;
+            }
+
+            const result = await createTopupOrder(categoryId, offerId, fzrFields, uniqueKey);
 
             if (!result || result.success !== true) {
                 if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
@@ -3589,8 +3603,11 @@ bot.on("callback_query", async (ctx) => {
         state.product = productInfo;
         state.step = "PLAYER";
         const firstItem = productInfo.cartItems[0];
+        const isGenshinCart = /genshin/i.test(String(firstItem?.categoryId || firstItem?.productId || ""));
         const prompt = firstItem.type === "fzr_topup"
-            ? "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel"
+            ? isGenshinCart
+                ? "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter your <b>Genshin Impact UID</b>:\n\nExample: 812345678\n\nType /cancel to cancel"
+                : "<tg-emoji emoji-id=\"5334815750655849990\">🎮</tg-emoji> Enter Player ID for the cart checkout:\n\nExample: 51807260252\n\nType /cancel to cancel"
             : "👤 Enter the required username or phone number for the cart checkout:\n\nType /cancel to cancel";
 
         try {
@@ -5151,9 +5168,54 @@ bot.on("text", async (ctx) => {
         setTimeout(() => showMainMenu(ctx), 3000);
         return;
     }
+    // ----- GENSHIN EMAIL STEP -----
+    if (state?.step === "GENSHIN_EMAIL") {
+        const input = ctx.message.text.trim();
+        if (!input || !input.includes("@")) {
+            return ctx.reply("❌ Please enter a valid email address.\n\nType /cancel to cancel");
+        }
+        if (!state.collectedData) state.collectedData = {};
+        state.collectedData.email = input;
+        state.step = "GENSHIN_PASSWORD";
+        return ctx.reply(
+            `✅ Email saved: <code>${input}</code>\n\n🔐 Now enter your <b>Genshin Impact account password</b>:\n\n⚠️ Your credentials are handled securely.\nType /cancel to cancel`,
+            { parse_mode: "HTML" }
+        );
+    }
+
+    // ----- GENSHIN PASSWORD STEP -----
+    if (state?.step === "GENSHIN_PASSWORD") {
+        const input = ctx.message.text.trim();
+        if (!input) {
+            return ctx.reply("❌ Password cannot be empty.\n\nType /cancel to cancel");
+        }
+        if (!state.collectedData) state.collectedData = {};
+        state.collectedData.password = input;
+        state.step = "CONFIRM";
+
+        const uid = state.collectedData.uid || state.playerId || "—";
+        const email = state.collectedData.email || "—";
+        const confirmMsg =
+            `✅ <b>Please confirm your Genshin Impact details:</b>\n\n` +
+            `👤 Player Name: <b>${state.playerName || "—"}</b>\n` +
+            `🆔 UID: <code>${uid}</code>\n` +
+            `📧 Email: <code>${email}</code>\n` +
+            `🔐 Password: ${"•".repeat(input.length)}\n\n` +
+            `Is everything correct?`;
+
+        return ctx.reply(confirmMsg, {
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "✅ Yes, Proceed", callback_data: "confirm_yes" }, { text: "❌ No, Edit", callback_data: "confirm_no" }],
+                    [{ text: "Cancel", callback_data: "cancel_order", icon_custom_emoji_id: "5260748017434130156" }],
+                ],
+            },
+        });
+    }
+
     // Handle player ID input
-    if (!state || state.step !== "PLAYER") return;
-    const input = ctx.message.text.trim();
+    if (!state || state.step !== "PLAYER") return; const input = ctx.message.text.trim();
     const product = state.product?.fullProduct;
     if (!input) return ctx.reply("❌ Invalid input. Please try again.\n\nType /cancel to cancel");
 
@@ -5183,6 +5245,19 @@ bot.on("text", async (ctx) => {
         let confirmMessage = "✅ Verification Successful\n\n";
         confirmMessage += `👤 Name: ${state.playerName}\n`;
         confirmMessage += `🆔 ID: ${input}\n\nIs this correct?`;
+
+        // Genshin Impact (FZR login/auto delivery) also needs email + password.
+        // Check if this is a Genshin order by inspecting the category/productId.
+        const isGenshin = /genshin/i.test(String(state.product?.productId || state.product?.categoryId || ""));
+        if (isGenshin) {
+            if (!state.collectedData) state.collectedData = {};
+            state.collectedData.uid = input;
+            state.step = "GENSHIN_EMAIL";
+            return ctx.reply(
+                `✅ UID Verified — Player: <b>${state.playerName}</b>\n🆔 UID: <code>${input}</code>\n\n📧 Now enter your <b>Genshin Impact account email</b>:\n\nType /cancel to cancel`,
+                { parse_mode: "HTML" }
+            );
+        }
 
         return ctx.reply(confirmMessage, {
             reply_markup: {
