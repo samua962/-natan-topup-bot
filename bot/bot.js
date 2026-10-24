@@ -2089,14 +2089,26 @@ async function processWalletPayment(ctx, productInfo) {
         if (gcResult && gcResult.success) {
             await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
             let successMsg = `✅ <b>Gift Card Delivered!</b>\n\n🎁 ${productInfo.name}\n💰 ${productInfo.price} ETB\n🧾 Order #${orderId}\n\n`;
-            if (gcResult.code) successMsg += `🔑 <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
-            if (gcResult.pin) successMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
-            if (!gcResult.code && !gcResult.pin) successMsg += `✅ Card processed. Check your email or contact support if not received.\n`;
+            // Handle multiple codes (cards array) or single code
+            const codes = gcResult.codes && gcResult.codes.length > 0 ? gcResult.codes : null;
+            if (codes) {
+                codes.forEach((item, i) => {
+                    if (codes.length > 1) successMsg += `<b>Card ${i + 1}:</b>\n`;
+                    successMsg += `🔑 <b>Code:</b> <code>${item.code}</code>\n`;
+                    if (item.pin) successMsg += `🔐 <b>PIN:</b> <code>${item.pin}</code>\n`;
+                    if (item.serial) successMsg += `📋 <b>Serial:</b> <code>${item.serial}</code>\n`;
+                });
+            } else if (gcResult.code) {
+                successMsg += `� <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
+                if (gcResult.pin) successMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
+            } else {
+                successMsg += `✅ Card processed. Check your email or contact support if not received.\n`;
+            }
             successMsg += `\nThank you for your order! 🙏`;
             await safeEdit(ctx, successMsg, [[{ text: "🏠 Main Menu", callback_data: "main_menu" }]]);
             await ctx.telegram.sendMessage(
                 process.env.ADMIN_ID,
-                `🟢 GIFT CARD DELIVERED (WALLET)\n\n👤 User: @${ctx.from.username || userId}\n🎁 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order #${orderId}\n${gcResult.code ? `🔑 Code: ${gcResult.code}` : "✅ Delivered"}`
+                `🟢 GIFT CARD DELIVERED (WALLET)\n\n👤 User: @${ctx.from.username || userId}\n🎁 Product: ${productInfo.name}\n💰 Amount: ${productInfo.price} ETB\n🧾 Order #${orderId}\n${gcResult.code ? `🔑 Code: ${gcResult.code}` : (codes ? `🎁 ${codes.length} code(s) delivered` : "✅ Delivered")}`
             );
         } else {
             await db.query(`UPDATE orders SET status='APPROVED' WHERE id=$1`, [orderId]);
@@ -2160,7 +2172,7 @@ async function showMainMenu(ctx) {
         const buttons = [
             [mkBtn("Browse Products", "browse_products", "browse_products")],
             [mkBtn("Order History", "myorders_back", "orders"),
-             mkBtn("Balance",       "show_wallet",   "wallet")],
+            mkBtn("Balance", "show_wallet", "wallet")],
             [mkBtn("Support", "support_menu", "support")],
         ];
 
@@ -2190,11 +2202,11 @@ async function showBrowseProducts(ctx) {
         return btn;
     };
     const buttons = [
-        [mkBtn("Games",                    "games_menu",          "menu_games")],
-        [mkBtn("Gift Cards",               "giftcards_menu",      "menu_giftcards")],
-        [mkBtn("Telegram Premium & Stars", "telegram_menu",       "telegram_premium")],
-        [mkBtn("Manual Top-ups",           "manual_topups_menu",  "menu_manual")],
-        [mkBtn("Main Menu",                "main_menu",           "main_menu_btn")],
+        [mkBtn("Games", "games_menu", "menu_games")],
+        [mkBtn("Gift Cards", "giftcards_menu", "menu_giftcards")],
+        [mkBtn("Telegram Premium & Stars", "telegram_menu", "telegram_premium")],
+        [mkBtn("Manual Top-ups", "manual_topups_menu", "menu_manual")],
+        [mkBtn("Main Menu", "main_menu", "main_menu_btn")],
     ];
     await safeEdit(ctx, "<b>Browse Products</b>\n\nSelect a category:", buttons);
 }
@@ -2210,13 +2222,13 @@ async function showGamesMenu(ctx) {
         return btn;
     };
     const buttons = [
-        [mkBtn("PUBG Mobile",    "game_pubg",           "game_pubg")],
-        [mkBtn("Free Fire",      "game_free_fire",      "game_free_fire")],
-        [mkBtn("Delta Force",    "game_delta_force",    "game_delta_force")],
-        [mkBtn("Blood Strike",   "game_blood_strike",   "game_blood_strike")],
+        [mkBtn("PUBG Mobile", "game_pubg", "game_pubg")],
+        [mkBtn("Free Fire", "game_free_fire", "game_free_fire")],
+        [mkBtn("Delta Force", "game_delta_force", "game_delta_force")],
+        [mkBtn("Blood Strike", "game_blood_strike", "game_blood_strike")],
         [mkBtn("Genshin Impact", "game_genshin_impact", "game_genshin")],
-        [mkBtn("Back",      "browse_products", "back_btn"),
-         mkBtn("Main Menu", "main_menu",       "main_menu_btn")],
+        [mkBtn("Back", "browse_products", "back_btn"),
+        mkBtn("Main Menu", "main_menu", "main_menu_btn")],
     ];
     await safeEdit(ctx, "<b>Games</b>\n\nSelect a game to top up:", buttons);
 }
@@ -2239,8 +2251,8 @@ async function showManualTopupsMenu(ctx) {
                 return btn;
             })
         );
-        const backBtn  = { text: "Back",      callback_data: "browse_products" };
-        const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+        const backBtn = { text: "Back", callback_data: "browse_products" };
+        const mainBtn = { text: "Main Menu", callback_data: "main_menu" };
         if (backEid) backBtn.icon_custom_emoji_id = backEid;
         if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
         buttons.push([backBtn, mainBtn]);
@@ -2257,10 +2269,10 @@ async function showManualTopupsMenu(ctx) {
 // =====================
 const GIFT_CARD_MENU = [
     { label: "PlayStation (US)", categoryId: "playstation_us", emojiKey: "gc_playstation" },
-    { label: "Xbox (US)",        categoryId: "xbox_us",         emojiKey: "gc_xbox" },
-    { label: "iTunes (US)",      categoryId: "itunes_us",       emojiKey: "gc_itunes" },
-    { label: "Roblox (Global)",  categoryId: "roblox_global",   emojiKey: "gc_roblox" },
-    { label: "Google Play (US)", categoryId: "google_play_us",  emojiKey: "gc_google_play" },
+    { label: "Xbox (US)", categoryId: "xbox_us", emojiKey: "gc_xbox" },
+    { label: "iTunes (US)", categoryId: "itunes_us", emojiKey: "gc_itunes" },
+    { label: "Roblox (Global)", categoryId: "roblox_global", emojiKey: "gc_roblox" },
+    { label: "Google Play (US)", categoryId: "google_play_us", emojiKey: "gc_google_play" },
 ];
 
 async function showGiftCardsMenu(ctx) {
@@ -2301,8 +2313,8 @@ async function showGiftCardsMenu(ctx) {
         });
         const backEid = getEmoji('system', 'back_btn');
         const mainEid = getEmoji('system', 'main_menu_btn');
-        const backBtn  = { text: "Back",      callback_data: "browse_products" };
-        const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+        const backBtn = { text: "Back", callback_data: "browse_products" };
+        const mainBtn = { text: "Main Menu", callback_data: "main_menu" };
         if (backEid) backBtn.icon_custom_emoji_id = backEid;
         if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
         buttons.push([backBtn, mainBtn]);
@@ -2940,16 +2952,16 @@ async function showPubgGameMenu(ctx, categoryId, categoryName) {
     };
     const backEid = getEmoji('system', 'back_btn');
     const mainEid = getEmoji('system', 'main_menu_btn');
-    const backBtn  = { text: "Back",      callback_data: "games_menu" };
-    const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+    const backBtn = { text: "Back", callback_data: "games_menu" };
+    const mainBtn = { text: "Main Menu", callback_data: "main_menu" };
     if (backEid) backBtn.icon_custom_emoji_id = backEid;
     if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
     const buttons = [
-        [mkBtn("UC",               "pubg_instant_uc",           "instant_uc")],
-        [mkBtn("WOW Coins",        "pubg_instant_wow",          "instant_wow")],
-        [mkBtn("Gross Pack",       "pubg_instant_grosspack",    "pubg_grosspack")],
-        [mkBtn("Subscription",     "pubg_instant_subscription", "pubg_subscription")],
-        [mkBtn("Weekly Deal Pack", "pubg_instant_weekly",       "pubg_weekly")],
+        [mkBtn("UC", "pubg_instant_uc", "instant_uc")],
+        [mkBtn("WOW Coins", "pubg_instant_wow", "instant_wow")],
+        [mkBtn("Gross Pack", "pubg_instant_grosspack", "pubg_grosspack")],
+        [mkBtn("Subscription", "pubg_instant_subscription", "pubg_subscription")],
+        [mkBtn("Weekly Deal Pack", "pubg_instant_weekly", "pubg_weekly")],
         [backBtn, mainBtn],
     ];
     await safeEdit(ctx, `<b>${categoryName || "PUBG Mobile"}</b>\n\nChoose top-up type:`, buttons);
@@ -2964,12 +2976,12 @@ async function showTelegramGameMenu(ctx, categoryId, categoryName) {
     };
     const backEid = getEmoji('system', 'back_btn');
     const mainEid = getEmoji('system', 'main_menu_btn');
-    const backBtn  = { text: "Back",      callback_data: "back" };
-    const mainBtn  = { text: "Main Menu", callback_data: "main_menu" };
+    const backBtn = { text: "Back", callback_data: "back" };
+    const mainBtn = { text: "Main Menu", callback_data: "main_menu" };
     if (backEid) backBtn.icon_custom_emoji_id = backEid;
     if (mainEid) mainBtn.icon_custom_emoji_id = mainEid;
     const buttons = [
-        [mkBtn("Telegram Stars",   "telegram_stars",   "telegram_stars")],
+        [mkBtn("Telegram Stars", "telegram_stars", "telegram_stars")],
         [mkBtn("Telegram Premium", "telegram_premium", "telegram_premium")],
         [backBtn, mainBtn],
     ];
@@ -4145,8 +4157,18 @@ bot.on("callback_query", async (ctx) => {
             if (gcResult && gcResult.success) {
                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                 let msg = `✅ Gift card delivered!\n\n🎁 ${order.product_name}\n🧾 Order #${orderId}\n`;
-                if (gcResult.code) msg += `🔑 Code: ${gcResult.code}\n`;
-                if (gcResult.pin) msg += `🔐 PIN: ${gcResult.pin}\n`;
+                const codes = gcResult.codes && gcResult.codes.length > 0 ? gcResult.codes : null;
+                if (codes) {
+                    codes.forEach((item, i) => {
+                        if (codes.length > 1) msg += `\nCard ${i + 1}:\n`;
+                        msg += `🔑 Code: <code>${item.code}</code>\n`;
+                        if (item.pin) msg += `🔐 PIN: <code>${item.pin}</code>\n`;
+                        if (item.serial) msg += `📋 Serial: <code>${item.serial}</code>\n`;
+                    });
+                } else if (gcResult.code) {
+                    msg += `🔑 Code: <code>${gcResult.code}</code>\n`;
+                    if (gcResult.pin) msg += `🔐 PIN: <code>${gcResult.pin}</code>\n`;
+                }
                 try { await ctx.telegram.sendMessage(order.telegram_id, msg, { parse_mode: "HTML" }); } catch (e) { }
                 try { await ctx.editMessageText(`✅ GIFT CARD DELIVERED\n\n${msg}`); } catch (e) { await ctx.reply(`✅ Gift card delivered: Order #${orderId}`); }
             } else {
@@ -4443,9 +4465,20 @@ bot.on("text", async (ctx) => {
                     if (gcResult && gcResult.success) {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         let deliveryMsg = `✅ Payment verified!\n\n🎁 ${product.name}\n💰 ${product.price} ETB\n🧾 Order #${orderId}\n\n`;
-                        if (gcResult.code) deliveryMsg += `🔑 <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
-                        if (gcResult.pin) deliveryMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
-                        if (!gcResult.code && !gcResult.pin) deliveryMsg += `✅ Card processed. Check your email or contact support.\n`;
+                        const codes = gcResult.codes && gcResult.codes.length > 0 ? gcResult.codes : null;
+                        if (codes) {
+                            codes.forEach((item, i) => {
+                                if (codes.length > 1) deliveryMsg += `<b>Card ${i + 1}:</b>\n`;
+                                deliveryMsg += `🔑 <b>Code:</b> <code>${item.code}</code>\n`;
+                                if (item.pin) deliveryMsg += `🔐 <b>PIN:</b> <code>${item.pin}</code>\n`;
+                                if (item.serial) deliveryMsg += `📋 <b>Serial:</b> <code>${item.serial}</code>\n`;
+                            });
+                        } else if (gcResult.code) {
+                            deliveryMsg += `� <b>Card Code:</b> <code>${gcResult.code}</code>\n`;
+                            if (gcResult.pin) deliveryMsg += `🔐 <b>PIN:</b> <code>${gcResult.pin}</code>\n`;
+                        } else {
+                            deliveryMsg += `✅ Card processed. Check your email or contact support.\n`;
+                        }
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, deliveryMsg, { parse_mode: "HTML" });
                         } catch (e) { await ctx.reply(deliveryMsg, { parse_mode: "HTML" }); }

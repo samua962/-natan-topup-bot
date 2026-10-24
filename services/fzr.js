@@ -31,6 +31,79 @@ async function fzrGet(path, params = {}) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll /orders/{id} until codes are available (up to maxAttempts * delayMs).
+ * Returns the latest response data.
+ */
+async function refreshGiftCardOrderDetails(orderId, currentData, maxAttempts = 10, delayMs = 3000) {
+  if (!orderId || !currentData?.order) return currentData;
+
+  const hasCodes = (d) =>
+    [d?.order?.cards, d?.order?.codes, d?.order?.keys, d?.order?.items,
+    d?.order?.gift_cards, d?.order?.voucher_codes]
+      .some(arr => Array.isArray(arr) && arr.length > 0);
+
+  const status = String(currentData.order.status || "").toLowerCase();
+  if (hasCodes(currentData) || !["created", "processing", "pending", "completed"].includes(status)) {
+    return currentData;
+  }
+
+  let latest = currentData;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(`[FZR] Gift card order ${orderId} has no codes yet; polling attempt ${attempt}/${maxAttempts}`);
+    const detail = await fzrGet(`/orders/${encodeURIComponent(orderId)}`);
+    if (detail.ok && detail.order) {
+      latest = detail;
+      const detailStatus = String(detail.order.status || "").toLowerCase();
+      if (hasCodes(detail)) {
+        console.log(`[FZR] Gift card order ${orderId} codes received on attempt ${attempt}`);
+        return detail;
+      }
+      if (detailStatus === "failed" || detailStatus === "cancelled") {
+        console.warn(`[FZR] Gift card order ${orderId} status=${detailStatus}, stopping poll`);
+        return detail;
+      }
+    }
+    if (attempt < maxAttempts) await sleep(delayMs);
+  }
+  console.warn(`[FZR] Gift card order ${orderId} codes not found after ${maxAttempts} attempts`);
+  return latest;
+}
+
+/**
+ * Extract all code items from an FZR order response.
+ * Returns [{ code, pin, serial, title }] or []
+ */
+function extractGiftCardCodes(data) {
+  const candidates = [
+    data?.order?.cards, data?.order?.codes, data?.order?.keys,
+    data?.order?.items, data?.order?.gift_cards, data?.order?.voucher_codes,
+    data?.cards, data?.codes,
+  ];
+  for (const list of candidates) {
+    if (!Array.isArray(list) || list.length === 0) continue;
+    const mapped = list.map((item, i) => {
+      if (typeof item === "string") return { code: item, pin: null, title: `Code ${i + 1}` };
+      if (!item || typeof item !== "object") return null;
+      const code = item.code || item.card || item.key || item.value || item.serial
+        || item.pin || item.number || item.voucher || item.voucher_code || item.code_value;
+      if (!code) return null;
+      return {
+        code: String(code),
+        pin: (item.pin && String(item.pin) !== String(code)) ? String(item.pin) : null,
+        serial: (item.serial && String(item.serial) !== String(code)) ? String(item.serial) : null,
+        title: item.name || item.title || item.label || `Code ${i + 1}`,
+      };
+    }).filter(Boolean);
+    if (mapped.length) return mapped;
+  }
+  return [];
+}
+
 async function fzrPost(path, payload = {}, extraHeaders = {}) {
   try {
     const res = await axios.post(`${BASE_URL}${path}`, payload, {
@@ -236,10 +309,14 @@ async function createTelegramPremiumOrder(telegramUsername, months) {
 
 /**
  * Create a gift card order via FZR.
- * @param {string} categoryId  - FZR gift card category_id
- * @param {string} offerId     - FZR offer_id
- * @param {Object} [fields]    - optional extra fields (e.g. { email })
+ * Uses card_id (not offer_id) as required by the FZR gift cards API,
+ * then polls for the code(s) if they are not immediately present.
+ *
+ * @param {string} categoryId      - FZR gift card category_id
+ * @param {string} offerId         - FZR card_id (the offer identifier)
+ * @param {Object} [fields]        - optional extra fields
  * @param {string} [idempotencyKey]
+ * @returns {{ success, orderId, code, pin, codes, data }}
  */
 async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotencyKey = null) {
   if (!FZR_API_KEY) {
@@ -248,6 +325,8 @@ async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotency
       data: { ok: true, order: { id: `MOCK_GC_${Date.now()}`, status: "processing" } },
       orderId: `MOCK_GC_${Date.now()}`,
       code: null,
+      pin: null,
+      codes: [],
     };
   }
 
@@ -257,29 +336,38 @@ async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotency
     return { success: false, error: "Missing FZR gift card category_id or offer_id" };
   }
 
+  // FZR gift cards API uses card_id, not offer_id
   const payload = {
     category_id: normalizedCategoryId,
-    offer_id: normalizedOfferId,
-    fields,
+    card_id: normalizedOfferId,
+    quantity: 1,
   };
 
   const requestHeaders = {};
   if (idempotencyKey) requestHeaders["Idempotency-Key"] = idempotencyKey;
 
-  console.log(`[FZR] POST /giftcards/order category_id=${normalizedCategoryId} offer_id=${normalizedOfferId}`);
+  console.log(`[FZR] POST /giftcards/order category_id=${normalizedCategoryId} card_id=${normalizedOfferId}`);
 
-  const res = await fzrPost("/giftcards/order", payload, requestHeaders);
+  let res = await fzrPost("/giftcards/order", payload, requestHeaders);
 
   if (!res || res.ok === false) {
     return { success: false, error: res?.error || "FZR gift card order failed", details: res };
   }
 
   const orderId = res.order?.id || res.id || res.order_id || null;
-  // Some gift card providers return the card code / serial in the response
-  const code = res.order?.code || res.code || res.serial || res.card_code || null;
-  const pin  = res.order?.pin  || res.pin  || null;
+  console.log(`[FZR] Gift card order placed category_id=${normalizedCategoryId} card_id=${normalizedOfferId} order_id=${orderId || "unknown"} status=${res.order?.status || "unknown"}`);
 
-  console.log(`[FZR] Gift card delivered category_id=${normalizedCategoryId} offer_id=${normalizedOfferId} order_id=${orderId || "unknown"}`);
+  // Poll for codes if not immediately in the response
+  if (orderId) {
+    res = await refreshGiftCardOrderDetails(orderId, res);
+  }
+
+  const codes = extractGiftCardCodes(res);
+  const firstCode = codes[0] || null;
+  const code = firstCode?.code
+    || res.order?.code || res.code || res.serial || res.card_code || null;
+  const pin = firstCode?.pin
+    || res.order?.pin || res.pin || null;
 
   return {
     success: res.ok === true || Boolean(res.order),
@@ -287,6 +375,7 @@ async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotency
     orderId,
     code,
     pin,
+    codes, // full array: [{ code, pin, serial, title }]
   };
 }
 
