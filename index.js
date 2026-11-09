@@ -53,6 +53,8 @@ const { loadEmojiCache } = require("./bot/emoji-helper");
         console.error("❌ Failed to load emoji cache during startup:", error.message);
     }
 
+    try { await require("./database/ensure-fzr-schema").ensureFzrSchema(); } catch (e) { console.error("❌ FZR schema check failed:", e.message); }
+
     const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
       ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
       : null;
