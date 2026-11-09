@@ -17,6 +17,7 @@ const {
     getGiftCardOffers,
     createGiftCardOrder,
 } = require("../services/fzr");
+const { waitForTopupOrderOutcome } = require("../services/fzr");
 const FormData = require("form-data");
 const { resolveVerifyEtBank, verifyPaymentWithVerifyEt } = require("../services/verify-et");
 
@@ -2011,7 +2012,20 @@ async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
                 return { success: false, error: "FZR returned the same provider order for more than one cart item. Delivery was not confirmed.", results };
             }
 
-            providerOrderIds.add(String(result.orderId));
+                            if (orderId) {
+                    try { await db.query('UPDATE fzr_delivery_units SET provider_order_id=$1 WHERE order_id=$2 AND unit_index=$3', [String(result.orderId), orderId, currentUnit]); } catch (e) {}
+                }
+                const outcome = await waitForTopupOrderOutcome(result.orderId);
+                if (outcome.status === 'failed') {
+                    if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
+                    return { success: false, error: 'FZR did not deliver: ' + outcome.reason, results };
+                }
+                if (outcome.status !== 'completed') {
+                    try { await bot.telegram.sendMessage(process.env.ADMIN_ID, 'WARNING: order #' + orderId + ' - FZR order ' + result.orderId + ' is not confirmed yet (' + outcome.reason + '). Check FZR before delivering manually, and do not press Retry.'); } catch (e) {}
+                    return { success: false, error: 'FZR order not confirmed (' + outcome.reason + ')', results };
+                }
+
+                providerOrderIds.add(String(result.orderId));
             results.push(result);
         }
     }

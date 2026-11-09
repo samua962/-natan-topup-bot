@@ -214,6 +214,24 @@ async function validatePlayer(categoryId, playerId) {
   };
 }
 
+async function waitForTopupOrderOutcome(providerOrderId, maxAttempts = 10, delayMs = 4000) {
+  if (!FZR_API_KEY || String(providerOrderId).startsWith('MOCK_')) {
+    return { status: 'completed', reason: 'mock' };
+  }
+  const failed = ['refund', 'refunded', 'failed', 'cancelled', 'canceled', 'rejected', 'error'];
+  let last = 'unknown';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const detail = await fzrGet('/orders/' + encodeURIComponent(providerOrderId));
+    const status = String((detail && detail.order && detail.order.status) || '').toLowerCase();
+    if (status) last = status;
+    console.log('[FZR] UC order ' + providerOrderId + ' status=' + (status || 'none') + ' attempt ' + attempt);
+    if (status === 'completed') return { status: 'completed' };
+    if (failed.includes(status)) return { status: 'failed', reason: status };
+    if (maxAttempts - attempt > 0) await sleep(delayMs);
+  }
+  return { status: 'unknown', reason: 'still ' + last };
+}
+
 async function createTopupOrder(categoryId, offerId, fields = {}, idempotencyKey = null) {
   if (!FZR_API_KEY) {
     return {
@@ -380,6 +398,7 @@ async function createGiftCardOrder(categoryId, offerId, fields = {}, idempotency
 }
 
 module.exports = {
+  waitForTopupOrderOutcome,
   BASE_URL,
   getTopupCategories,
   getGiftCardCategories,
