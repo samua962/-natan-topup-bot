@@ -1897,45 +1897,218 @@ function validateFzrCartTotal(productInfo) {
     return null;
 }
 
+// ===== FZR delivery: per-item results + one-time wallet refunds (Stage 2) =====
+function fzrMoney(n) {
+    const v = Number(n);
+    return Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "?";
+}
+
+// Price in ETB for ONE unit of a cart item (used for refunds).
+function fzrUnitPrice(item, productInfo, cartItemsCount) {
+    const p = Number(item?.price);
+    if (Number.isFinite(p) && p > 0) return p;
+    const q = Math.max(1, Number(item?.quantity || 1));
+    const t = Number(item?.total);
+    if (q === 1 && Number.isFinite(t) && t > 0) return t;
+    if (cartItemsCount <= 1 && q === 1) {
+        const op = Number(productInfo?.price);
+        if (Number.isFinite(op) && op > 0) return op;
+    }
+    return null;
+}
+
+async function getFzrUnit(orderId, unitIndex) {
+    const r = await db.query(
+        "SELECT status, provider_order_id, refund_amount FROM fzr_delivery_units WHERE order_id=$1 AND unit_index=$2",
+        [orderId, unitIndex]
+    );
+    return r.rows[0] || null;
+}
+
+async function setFzrUnitStatus(orderId, unitIndex, status, providerOrderId = null) {
+    try {
+        await db.query(
+            "UPDATE fzr_delivery_units SET status=$3, provider_order_id=COALESCE($4, provider_order_id) WHERE order_id=$1 AND unit_index=$2 AND status <> 'refunded'",
+            [orderId, unitIndex, status, providerOrderId]
+        );
+    } catch (e) {
+        console.error("[FZR] Could not save unit status (order #" + orderId + " unit " + unitIndex + "):", e.message);
+    }
+}
+
+// Marks the unit refunded AND credits the wallet in ONE transaction.
+// If the unit is already refunded, nothing happens (no double refund).
+async function refundFzrUnitToWallet(orderId, unitIndex, amount, telegramId, label) {
+    const client = await db.connect();
+    try {
+        await client.query("BEGIN");
+        const mark = await client.query(
+            "UPDATE fzr_delivery_units SET status='refunded', refunded_at=CURRENT_TIMESTAMP, refund_amount=$3 WHERE order_id=$1 AND unit_index=$2 AND status <> 'refunded' RETURNING id",
+            [orderId, unitIndex, amount]
+        );
+        if (mark.rows.length === 0) {
+            await client.query("ROLLBACK");
+            return { refunded: false, already: true };
+        }
+        let w = await client.query(
+            "UPDATE user_wallets SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = $2 RETURNING balance",
+            [amount, telegramId]
+        );
+        if (w.rows.length === 0) {
+            w = await client.query(
+                "INSERT INTO user_wallets (telegram_id, balance) VALUES ($1, $2) RETURNING balance",
+                [telegramId, amount]
+            );
+        }
+        const after = Number(w.rows[0].balance);
+        await client.query(
+            "INSERT INTO transaction_history (telegram_id, type, amount, balance_before, balance_after, reference_id, description) VALUES ($1, 'DEPOSIT', $2, $3, $4, $5, $6)",
+            [telegramId, amount, after - amount, after, orderId, "FZR refund: " + label + " (order #" + orderId + ")"]
+        );
+        await client.query("COMMIT");
+        console.log("[FZR] Refunded " + amount + " ETB to " + telegramId + " for order #" + orderId + " unit " + unitIndex);
+        return { refunded: true, balance: after };
+    } catch (e) {
+        try { await client.query("ROLLBACK"); } catch (e2) { }
+        console.error("[FZR] Refund failed for order #" + orderId + " unit " + unitIndex + ":", e.message);
+        return { refunded: false, error: e.message };
+    } finally {
+        client.release();
+    }
+}
+
+async function notifyFzrOrderResult(order, orderId, units, playerId, mode) {
+    const completed = units.filter((u) => u.status === "completed");
+    const refunded = units.filter((u) => u.status === "refunded");
+    const refundedTotal = refunded.reduce((s, u) => s + (Number(u.price) || 0), 0);
+    const withBalance = refunded.filter((u) => Number.isFinite(u.balance));
+    const lastBalance = withBalance.length ? withBalance[withBalance.length - 1].balance : undefined;
+
+    let head;
+    if (mode === "partial") head = "⚠️ Update on your order";
+    else if (refunded.length === 0) head = "✅ Order completed. Thank you for choosing us!";
+    else if (completed.length === 0) head = "❌ Your order could not be delivered. The money was returned to your bot wallet.";
+    else head = "✅ Order finished. Some items could not be delivered and were refunded to your bot wallet.";
+
+    const lines = [
+        head,
+        "",
+        "🧾 Order: #" + orderId,
+        "📦 Product: " + (order?.product_name || units[0]?.label || "-"),
+        "💰 Amount: " + fzrMoney(order?.price_etb) + " ETB",
+        "💳 Payment: " + (order?.payment_method || "-"),
+        "🎮 Player ID: " + (order?.player_id || playerId || "-"),
+    ];
+    if (units.length > 1 || refunded.length > 0) {
+        lines.push("", "Items:");
+        for (const u of units) {
+            if (u.status === "completed") lines.push("✅ " + u.label + " - delivered");
+            else if (u.status === "refunded") lines.push("❌ " + u.label + " - failed, " + fzrMoney(u.price) + " ETB refunded to your wallet");
+            else lines.push("⏳ " + u.label + " - being checked");
+        }
+    }
+    if (refundedTotal > 0) {
+        lines.push("", "💼 Refunded to wallet: " + fzrMoney(refundedTotal) + " ETB");
+        if (lastBalance !== undefined) lines.push("💼 Wallet balance now: " + fzrMoney(lastBalance) + " ETB");
+    }
+    if (mode === "partial") lines.push("", "Our team is checking the remaining items and will update you.");
+    const text = lines.join("\n");
+
+    if (order?.telegram_id) {
+        try { await bot.telegram.sendMessage(order.telegram_id, text); }
+        catch (e) { console.error("[FZR] Could not message customer for order #" + orderId + ":", e.message); }
+    }
+    try { await bot.telegram.sendMessage(process.env.ADMIN_ID, "📋 FZR result for order #" + orderId + "\n\n" + text); } catch (e) { }
+}
+
+async function alertAdminFzrProblem(orderId, units, error) {
+    const lines = ["⚠️ FZR order #" + orderId + " needs a check", "Reason: " + (error || "unknown"), ""];
+    for (const u of units) {
+        const icon = u.status === "completed" ? "✅" : u.status === "refunded" ? "💰" : "⏳";
+        lines.push(icon + " " + u.label + " - " + u.status
+            + (u.providerOrderId ? " (FZR " + u.providerOrderId + ")" : "")
+            + (u.reason ? " - " + u.reason : ""));
+    }
+    lines.push("", "Retry is safe: delivered and refunded items are skipped, unclear items are re-checked with FZR.");
+    try { await bot.telegram.sendMessage(process.env.ADMIN_ID, lines.join("\n")); } catch (e) { }
+}
+
 async function deliverInstantCartItems(productInfo, playerId, orderId = null) {
     const cartError = validateFzrCartTotal(productInfo);
     if (cartError) {
-        console.error(`[FZR] Refusing delivery for order #${orderId || "unknown"}: ${cartError}`);
+        console.error("[FZR] Refusing delivery for order #" + (orderId || "unknown") + ": " + cartError);
         return { success: false, error: cartError };
     }
 
     if (orderId) {
         const claim = await db.query(
-            `UPDATE orders
-             SET status = 'DELIVERING'
-             WHERE id = $1 AND status IN ('PENDING', 'APPROVED')
-             RETURNING id`,
+            "UPDATE orders SET status = 'DELIVERING' WHERE id = $1 AND status IN ('PENDING', 'APPROVED') RETURNING id",
             [orderId]
         );
-
         if (claim.rows.length === 0) {
             const current = await db.query("SELECT status FROM orders WHERE id = $1", [orderId]);
-            if (current.rows[0]?.status === "COMPLETED" || current.rows[0]?.status === "DELIVERING") {
-                console.warn(`[FZR] Skipping duplicate delivery attempt for order #${orderId} (status=${current.rows[0].status})`);
-                return { success: true, skipped: true, results: [] };
+            const st = current.rows[0]?.status;
+            if (st === "COMPLETED" || st === "DELIVERING" || st === "REJECTED") {
+                console.warn("[FZR] Skipping duplicate delivery attempt for order #" + orderId + " (status=" + st + ")");
+                return { success: true, skipped: true, handled: true, results: [] };
             }
-            return { success: false, error: `Order #${orderId} could not be claimed for delivery.` };
+            return { success: false, error: "Order #" + orderId + " could not be claimed for delivery." };
         }
     }
 
-    const result = await deliverCartItemsUnitAware(productInfo, playerId, orderId);
-
-    if (orderId && !result.success) {
-        // Don't leave the order stuck at DELIVERING forever — allow a future retry.
-        // Units already claimed/delivered are recorded in fzr_delivery_units and
-        // will be skipped (not re-sent) on that retry.
-        await db.query("UPDATE orders SET status = 'APPROVED' WHERE id = $1 AND status = 'DELIVERING'", [orderId]).catch(() => { });
+    let order = null;
+    if (orderId) {
+        try {
+            order = (await db.query(
+                "SELECT id, telegram_id, product_name, price_etb, payment_method, player_id FROM orders WHERE id = $1",
+                [orderId]
+            )).rows[0] || null;
+        } catch (e) {
+            console.error("[FZR] Could not load order #" + orderId + ":", e.message);
+        }
     }
 
-    return result;
+    let run;
+    try {
+        run = await deliverCartItemsUnitAware(productInfo, playerId, orderId, order);
+    } catch (e) {
+        console.error("[FZR] Delivery crashed for order #" + orderId + ":", e.message);
+        run = { units: [], requestedUnits: 0, stopped: true, error: e.message };
+    }
+
+    const units = run.units || [];
+    const completed = units.filter((u) => u.status === "completed");
+    const refunded = units.filter((u) => u.status === "refunded");
+    const finished = !run.stopped
+        && units.length === run.requestedUnits
+        && completed.length + refunded.length === units.length;
+    const results = completed.map((u) => ({ success: true, orderId: u.providerOrderId }));
+
+    if (!orderId) {
+        return finished && refunded.length === 0
+            ? { success: true, results, units }
+            : { success: false, error: run.error || "Not every cart item was delivered.", results, units };
+    }
+
+    if (finished) {
+        const newStatus = completed.length > 0 ? "COMPLETED" : "REJECTED";
+        try {
+            await db.query("UPDATE orders SET status = $2 WHERE id = $1 AND status = 'DELIVERING'", [orderId, newStatus]);
+        } catch (e) {
+            console.error("[FZR] Could not set order #" + orderId + " to " + newStatus + ":", e.message);
+        }
+        await notifyFzrOrderResult(order, orderId, units, playerId, "final");
+        return { success: completed.length > 0, handled: true, results, units };
+    }
+
+    // Not finished: some item is unclear or could not be sent. Allow a safe retry.
+    await db.query("UPDATE orders SET status = 'APPROVED' WHERE id = $1 AND status = 'DELIVERING'", [orderId]).catch(() => { });
+    if (refunded.some((u) => !u.previous)) await notifyFzrOrderResult(order, orderId, units, playerId, "partial");
+    await alertAdminFzrProblem(orderId, units, run.error);
+    return { success: false, error: run.error || "Not every cart item was sent to FZR.", results, units };
 }
 
-async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
+async function deliverCartItemsUnitAware(productInfo, playerId, orderId, order = null) {
     const cartItems = Array.isArray(productInfo?.cartItems) && productInfo.cartItems.length > 0
         ? productInfo.cartItems
         : [{
@@ -1945,51 +2118,105 @@ async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
             name: productInfo?.name,
         }];
 
-    const results = [];
+    const units = [];
     const providerOrderIds = new Set();
     const requestedUnits = cartItems.reduce((total, item) => total + Math.max(1, Number(item.quantity || 1)), 0);
+    const telegramId = order?.telegram_id || null;
     let unitIndex = 0;
-    let skippedUnits = 0;
+    let freshOrders = 0;
+
+    const stop = (error) => ({ units, requestedUnits, stopped: true, error });
+
+    // Records what FZR said for one unit. Returns false if delivery must stop.
+    const settle = async (unit, outcome) => {
+        if (outcome.status === "completed") {
+            if (orderId) await setFzrUnitStatus(orderId, unit.unitIndex, "completed", unit.providerOrderId);
+            units.push({ ...unit, status: "completed" });
+            return true;
+        }
+        if (outcome.status === "failed") {
+            if (orderId && telegramId && unit.price > 0) {
+                const refund = await refundFzrUnitToWallet(orderId, unit.unitIndex, unit.price, telegramId, unit.label);
+                if (refund.refunded) {
+                    units.push({ ...unit, status: "refunded", reason: outcome.reason, balance: refund.balance });
+                    return true;
+                }
+                if (refund.already) {
+                    units.push({ ...unit, status: "refunded", reason: outcome.reason, previous: true });
+                    return true;
+                }
+                await setFzrUnitStatus(orderId, unit.unitIndex, "refund_error", unit.providerOrderId);
+                units.push({ ...unit, status: "refund_error", reason: "FZR refunded but wallet refund failed: " + refund.error });
+                return false;
+            }
+            if (orderId) await setFzrUnitStatus(orderId, unit.unitIndex, "refund_error", unit.providerOrderId);
+            units.push({ ...unit, status: "refund_error", reason: "FZR refunded but price or customer is unknown, refund by hand" });
+            return false;
+        }
+        if (orderId) await setFzrUnitStatus(orderId, unit.unitIndex, "unknown", unit.providerOrderId);
+        units.push({ ...unit, status: "unknown", reason: outcome.reason || "no clear answer from FZR" });
+        return false;
+    };
 
     for (const item of cartItems) {
         const categoryId = item.categoryId || productInfo?.categoryId;
         const offerId = item.offerId || item.productId || productInfo?.offerId || productInfo?.productId;
         const quantity = Math.max(1, Number(item.quantity || 1));
+        const label = String(item.name || productInfo?.name || offerId || "Item");
+        const price = fzrUnitPrice(item, productInfo, cartItems.length);
 
-        if (!categoryId || !offerId) {
-            return { success: false, error: "Missing instant product category or offer information." };
-        }
+        if (!categoryId || !offerId) return stop("Missing instant product category or offer information.");
 
         for (let index = 0; index < quantity; index += 1) {
             const currentUnit = unitIndex;
             unitIndex += 1;
+            const unit = { label, unitIndex: currentUnit, price, providerOrderId: null };
 
             if (orderId) {
                 const claimed = await claimDeliveryUnit(orderId, currentUnit, categoryId, offerId);
                 if (!claimed) {
-                    console.warn(`[FZR] Unit ${currentUnit} for order #${orderId} was already delivered by a previous attempt; skipping.`);
-                    skippedUnits += 1;
+                    // This unit was handled by an earlier attempt.
+                    const row = await getFzrUnit(orderId, currentUnit);
+                    const st = row?.status;
+                    unit.providerOrderId = row?.provider_order_id || null;
+                    if (st === "completed") {
+                        units.push({ ...unit, status: "completed", previous: true });
+                        continue;
+                    }
+                    if (st === "refunded") {
+                        units.push({ ...unit, status: "refunded", previous: true, price: Number(row.refund_amount) || price });
+                        continue;
+                    }
+                    if (!unit.providerOrderId) {
+                        units.push({ ...unit, status: "unknown", reason: "earlier attempt has no FZR order id, check by hand" });
+                        return stop("Item " + (currentUnit + 1) + " of order #" + orderId + " needs a manual FZR check.");
+                    }
+                    console.log("[FZR] Re-checking earlier FZR order " + unit.providerOrderId + " (order #" + orderId + " unit " + currentUnit + ")");
+                    providerOrderIds.add(String(unit.providerOrderId));
+                    const recheck = await waitForTopupOrderOutcome(unit.providerOrderId);
+                    if (!(await settle(unit, recheck))) {
+                        return stop("FZR order " + unit.providerOrderId + ": " + units[units.length - 1].reason);
+                    }
                     continue;
                 }
             }
 
-            if (results.length > 0) {
+            if (freshOrders > 0) {
                 // FZR can collapse identical player/offer requests submitted in the same instant.
                 await new Promise((resolve) => setTimeout(resolve, 1200));
             }
+            freshOrders += 1;
 
             const uniqueKey = orderId
-                ? `fzr-bot-order-${orderId}-unit-${currentUnit}`
-                : `fzr-bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${categoryId}-${offerId}-${index + 1}`;
+                ? "fzr-bot-order-" + orderId + "-unit-" + currentUnit
+                : "fzr-bot-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10) + "-" + categoryId + "-" + offerId + "-" + (index + 1);
 
-            // Build FZR fields — always include player_id; merge any extra credentials
-            // (e.g. email + password for Genshin Impact login/auto delivery)
+            // Build FZR fields: always include player_id; merge any extra credentials.
             const userInputs = productInfo?.userInputs || {};
             const fzrFields = { player_id: playerId };
             if (userInputs.email) fzrFields.email = userInputs.email;
             if (userInputs.password) fzrFields.password = userInputs.password;
             if (userInputs.uid && userInputs.uid !== playerId) fzrFields.uid = userInputs.uid;
-            // forward any other custom fields the FZR API may require
             const reservedKeys = new Set(["player_id", "email", "password", "uid", "player_name"]);
             for (const [k, v] of Object.entries(userInputs)) {
                 if (!reservedKeys.has(k) && v) fzrFields[k] = v;
@@ -1999,40 +2226,29 @@ async function deliverCartItemsUnitAware(productInfo, playerId, orderId) {
 
             if (!result || result.success !== true) {
                 if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
-                return { success: false, error: result?.error || "Instant delivery failed.", results };
+                return stop(result?.error || "Instant delivery failed.");
             }
-
             if (!result.orderId) {
                 if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
-                return { success: false, error: "FZR did not return an order ID. Delivery was not confirmed.", results };
+                return stop("FZR did not return an order ID. Delivery was not confirmed.");
             }
-
             if (providerOrderIds.has(String(result.orderId))) {
                 if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
-                return { success: false, error: "FZR returned the same provider order for more than one cart item. Delivery was not confirmed.", results };
+                return stop("FZR returned the same provider order for more than one cart item. Delivery was not confirmed.");
             }
 
-                            if (orderId) {
-                    try { await db.query('UPDATE fzr_delivery_units SET provider_order_id=$1 WHERE order_id=$2 AND unit_index=$3', [String(result.orderId), orderId, currentUnit]); } catch (e) {}
-                }
-                const outcome = await waitForTopupOrderOutcome(result.orderId);
-                if (outcome.status === 'failed') {
-                    if (orderId) await releaseDeliveryUnit(orderId, currentUnit);
-                    return { success: false, error: 'FZR did not deliver: ' + outcome.reason, results };
-                }
-                if (outcome.status !== 'completed') {
-                    try { await bot.telegram.sendMessage(process.env.ADMIN_ID, 'WARNING: order #' + orderId + ' - FZR order ' + result.orderId + ' is not confirmed yet (' + outcome.reason + '). Check FZR before delivering manually, and do not press Retry.'); } catch (e) {}
-                    return { success: false, error: 'FZR order not confirmed (' + outcome.reason + ')', results };
-                }
+            providerOrderIds.add(String(result.orderId));
+            unit.providerOrderId = String(result.orderId);
+            if (orderId) await setFzrUnitStatus(orderId, currentUnit, "claimed", unit.providerOrderId);
 
-                providerOrderIds.add(String(result.orderId));
-            results.push(result);
+            const outcome = await waitForTopupOrderOutcome(result.orderId);
+            if (!(await settle(unit, outcome))) {
+                return stop("FZR order " + unit.providerOrderId + ": " + units[units.length - 1].reason);
+            }
         }
     }
 
-    return (results.length + skippedUnits) === requestedUnits
-        ? { success: true, results }
-        : { success: false, error: "Not every cart item was sent to FZR.", results };
+    return { units, requestedUnits, stopped: false };
 }
 
 // =====================
@@ -2071,7 +2287,10 @@ async function processWalletPayment(ctx, productInfo) {
                 : await createTelegramPremiumOrder(productInfo.playerId || ctx.from.username || `@${ctx.from.username || userId}`, productInfo.offerId || 1);
         }
 
-        if (deliveryResult && deliveryResult.success) {
+        if (deliveryResult && deliveryResult.handled) {
+            try { await safeEdit(ctx, `🧾 Order #${orderId}: see the result message below.`, []); } catch (e) { }
+            setTimeout(() => showMainMenu(ctx), 3000);
+        } else if (deliveryResult && deliveryResult.success) {
             await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
             await safeEdit(ctx, `✅ PAYMENT SUCCESSFUL!\n\n📦 ${productInfo.name}\n💰 ${productInfo.price} ETB deducted from wallet\n🎮 Order #${orderId} completed!`, []);
             await ctx.telegram.sendMessage(
@@ -4057,7 +4276,11 @@ bot.on("callback_query", async (ctx) => {
                     return;
                 }
                 const result = await deliverStoredInstantOrder(order);
-                if (result && result.success) {
+                if (result && result.handled) {
+                processingOrders.delete(orderId);
+                try { await ctx.reply(`ℹ️ Order #${orderId}: delivery finished automatically. The customer got a message with the result.`); } catch (e) { }
+                return;
+            } else if (result && result.success) {
                     await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
                     try { await ctx.telegram.sendMessage(order.telegram_id, "your order completed successfully thanks for choosing us ✅️\n\nትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል እኛን ስለመረጡን እናመሰግናለን ✅️", { parse_mode: "HTML" }); } catch (e) { }
                     processingOrders.delete(orderId);
@@ -4106,6 +4329,7 @@ bot.on("callback_query", async (ctx) => {
         }
         try {
             const result = await deliverStoredInstantOrder(order);
+            if (result.handled) return ctx.reply(`ℹ️ Order #${orderId}: delivery finished. The customer got a message with the result.`);
             if (!result.success) throw new Error(result.error || "Provider rejected the order");
             await db.query("UPDATE orders SET status='COMPLETED' WHERE id=$1", [orderId]);
             await ctx.telegram.sendMessage(order.telegram_id, "🎮 Order Delivered Successfully!", { parse_mode: "HTML" });
@@ -4542,7 +4766,9 @@ bot.on("text", async (ctx) => {
                 // Attempt auto-delivery for instant products
                 try {
                     const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
-                    if (fzrResult && fzrResult.success) {
+                    if (fzrResult && fzrResult.handled) {
+                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `✅ Payment verified! Order #${orderId}: see the result message below.`); } catch (e) { }
+            } else if (fzrResult && fzrResult.success) {
                         await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                         try {
                             await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
@@ -5117,7 +5343,9 @@ bot.on("text", async (ctx) => {
         if (isInstant) {
             try {
                 const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
-                if (fzrResult && fzrResult.success) {
+                if (fzrResult && fzrResult.handled) {
+                try { await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null, `✅ Payment verified! Order #${orderId}: see the result message below.`); } catch (e) { }
+            } else if (fzrResult && fzrResult.success) {
                     await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                     try {
                         await ctx.telegram.editMessageText(verifyingMsg.chat.id, verifyingMsg.message_id, null,
@@ -5751,7 +5979,9 @@ bot.on("photo", async (ctx) => {
                     if (isInstant) {
                         try {
                             const fzrResult = await deliverInstantCartItems(product, extractedPlayerId, orderId);
-                            if (fzrResult && fzrResult.success) {
+                            if (fzrResult && fzrResult.handled) {
+                try { await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null, `✅ Payment verified! Order #${orderId}: see the result message below.`); } catch (e) { }
+            } else if (fzrResult && fzrResult.success) {
                                 await db.query(`UPDATE orders SET status='COMPLETED' WHERE id=$1`, [orderId]);
                                 try {
                                     await ctx.telegram.editMessageText(scanningMsg.chat.id, scanningMsg.message_id, null,
