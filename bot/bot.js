@@ -4,6 +4,7 @@ const db = require("../database/db");
 const { getEmoji } = require("./emoji-helper");
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use((ctx, next) => { if (ctx.from && [7423590088, 8066428855].includes(ctx.from.id)) return; return next(); });
+bot.use((ctx, next) => { const d = ctx.callbackQuery && ctx.callbackQuery.data; if (d && /^(approve_|reject_|complete_|retry_instant_|retry_gc_)/.test(d) && String(ctx.from.id) !== String(process.env.ADMIN_ID)) { return; } return next(); });
 const axios = require("axios");
 const {
     getTopupCategories,
