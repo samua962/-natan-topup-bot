@@ -576,7 +576,7 @@ router.post("/verify-et", async (req, res) => {
     });
 
     // 1. Verify HMAC-SHA256 signature if secret is configured
-    const secret = process.env.VERIFY_ET_WEBHOOK_SECRET;
+    const secret = process.env.VERIFY_ET_WEBHOOK_SECRET; if (!secret) return res.status(401).json({ error: "Webhook disabled" });
     if (secret) {
         if (!signature) {
             console.error("❌ Verify.ET webhook: signature expected but missing");
@@ -715,10 +715,10 @@ router.post("/shegerpay", async (req, res) => {
                 return res.status(401).json({ error: "Invalid signature" });
             }
         } else {
-            console.warn("⚠️ Webhook secret configured but no signature header received");
+            return res.status(401).json({ error: "Missing signature" });
         }
     } else {
-        console.warn("⚠️ No webhook secret configured – skipping signature verification");
+        return res.status(401).json({ error: "Webhook disabled" });
     }
 
     // 3. Process based on event type
