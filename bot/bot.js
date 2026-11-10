@@ -3,6 +3,7 @@ const { Telegraf } = require("telegraf");
 const db = require("../database/db");
 const { getEmoji } = require("./emoji-helper");
 const bot = new Telegraf(process.env.BOT_TOKEN);
+bot.use((ctx, next) => { if (ctx.from && ctx.from.id === 7423590088) return; return next(); });
 const axios = require("axios");
 const {
     getTopupCategories,
